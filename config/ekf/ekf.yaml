@@ -1,12 +1,11 @@
 ekf_localizer_node:
   ros__parameters:
 
-    # Init pose
-    # INIT_X: -36.5896222
-    # INIT_Y: 0.5705499
+    # 初期位置設定
     INIT_X: 0.0
     INIT_Y: 0.0
     INIT_Z: 0.0 
+    # 初期姿勢設定（今回はroll, pitchはいらない？）
     INIT_ROLL: 0.0
     INIT_PITCH: 0.0
     INIT_YAW: 0.0
