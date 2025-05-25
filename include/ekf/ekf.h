@@ -8,6 +8,10 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <std_msgs/msg/bool.hpp>
+#include "nav_msgs/msg/path.hpp"
+
+#include <tf2/utils.h>
+#include <tf2_eigen/tf2_eigen.hpp>
 
 #include <Eigen/Dense>
 
@@ -23,21 +27,19 @@ private:
 	void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr msg);
 	void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
 	
-	void measurement_callback(const std_msgs::msg::Bool::ConstSharedPtr msg);
+	// void measurement_callback(const std_msgs::msg::Bool::ConstSharedPtr msg);
 
 	void initialize(double x,double y,double z,double roll,double pitch,double yaw);
 	void set_pose(double x,double y,double z,double roll,double pitch,double yaw);
 	void calc_rpy_from_quat(geometry_msgs::msg::Quaternion q,double& roll,double& pitch,double& yaw);
 	
-	void motion_update_3DoF(double dt);
+	void motion_update_3DoF(bool is_odom, double dt);
 	void motion_update_6DoF(double dt);
-	void motion_update(double dt);
+	void motion_update(bool is_odom, double dt);
 	void measurement_update();
 	void measurement_update_3DoF();
 	void measurement_update_6DoF();
 	
-	void respawn();
-
 	void publish_ekf_pose();
 	// void publish_tf();
 
@@ -46,32 +48,38 @@ private:
 	geometry_msgs::msg::Quaternion rpy_to_msg(double roll,double pitch,double yaw);
 	Eigen::Matrix3d calc_rotation_matrix(Eigen::Vector3d euler_angle);
 	Eigen::VectorXd measurement_function(Eigen::VectorXd x,Eigen::MatrixXd h);
+	bool check_mahalanobis_distance(geometry_msgs::msg::PoseStamped ekf_pose, geometry_msgs::msg::PoseStamped ndt_pose);
+	bool check_ekf_covariance(geometry_msgs::msg::PoseStamped ekf_pose);
 
-	// double get_yaw(geometry_msgs::Quaternion q);
+	// double get_yaw(geometry_msgs::msg::Quaternion q);
 
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr ndt_pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
 
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr ekf_pose_pub_;
+	rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
 
 	std::shared_ptr<tf2_ros::TransformBroadcaster> broadcaster_;
     std::shared_ptr<tf2_ros::TransformListener> listener_;
 	std::shared_ptr<tf2::BufferCore> buffer_ = std::make_shared<tf2::BufferCore>();
 
-
 	nav_msgs::msg::Odometry odom_;
-	Eigen::Vector3d last_odom_eigen = Eigen::Vector3d::Zero();
 	nav_msgs::msg::Odometry last_odom_pose;
+	Eigen::Vector3d last_odom_eigen = Eigen::Vector3d::Zero();
 	geometry_msgs::msg::PoseStamped ndt_pose_;
 	geometry_msgs::msg::PoseStamped ekf_pose_;
 	sensor_msgs::msg::Imu imu_;
-	rclcpp::Time now_time_;
-	rclcpp::Time last_time_;
+	rclcpp::Time now_time_odom_;
+	rclcpp::Time last_time_odom_;
+	rclcpp::Time now_time_imu_;
+	rclcpp::Time last_time_imu_;
+	rclcpp::Time time_publish_;
 
 	std_msgs::msg::Bool is_measurement_;
-	geometry_msgs::msg::PoseStamped respawn_pose_;
+	nav_msgs::msg::Path ekf_pose_trajectry;
+	std::vector<geometry_msgs::msg::PoseStamped> poses_;
 
 	std::string ndt_pose_topic_name_;
 	std::string imu_topic_name_;
@@ -82,7 +90,6 @@ private:
 	std::string base_link_frame_id_;
 
 	std::string measurement_topic_name_;
-	std::string respawn_pose_topic_name_;
 
 	bool has_received_odom_;
 	bool has_received_imu_;
@@ -91,8 +98,8 @@ private:
 	bool is_odom_tf_;
 	bool is_3DoF_;
 
-	bool is_respawn_;
-	bool is_first_ = true;
+	bool is_first_odom_ = true;
+	bool is_first_imu_ = true;
 
 	double INIT_X_;
 	double INIT_Y_;
@@ -108,7 +115,11 @@ private:
 	double MOTION_NOISE_NO_;
 	double MOTION_NOISE_ON_;
 	double MOTION_NOISE_OO_;
-	double dt;
+	// double dt;
+	double th_mahalanobis_;
+	double th_covariance_;
+	double th_pose_covariance_;
+	double th_direction_covariance_;
 
 	int STATE_SIZE_;
 	Eigen::VectorXd X_;

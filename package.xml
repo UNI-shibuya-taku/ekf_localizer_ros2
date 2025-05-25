@@ -71,6 +71,8 @@
 
   <depend>launch</depend>
   <depend>launch_ros</depend>
+  <depend>ndt_omp</depend>
+  <!-- <depend>pclomp</depend> -->
 
   <export>
     <build_type>ament_cmake</build_type>

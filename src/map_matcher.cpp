@@ -4,27 +4,16 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 {
 	this->declare_parameter<std::string>("pcd_file_path", "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd");
 	this->declare_parameter<std::string>("pc_topic_name", {"/velodyne_points"});
-	this->declare_parameter<std::string>("orb_pc_topic_name", "orb_pc_in");
-	this->declare_parameter<std::string>("ekf_pose_topic_name", {"/ekf_pose"});
-	this->declare_parameter<std::string>("ndt_pose_topic_name", {"/ndt_pose"});
+	// this->declare_parameter<std::string>("orb_pc_topic_name", "orb_pc_in");
+	this->declare_parameter<std::string>("ekf_pose_topic_name", {"/test/ekf_pose"});
+	this->declare_parameter<std::string>("ndt_pose_topic_name", {"/test/ndt_pose"});
 	this->declare_parameter<std::string>("map_topic_name", {"map_out"});
 	this->declare_parameter<std::string>("ndt_pc_topic_name", {"/ndt_pc"});
 	this->declare_parameter<std::string>("map_frame_id", {"map"});
 	this->declare_parameter<bool>("is_publish_map", {true});
 	this->declare_parameter<bool>("is_pcl_offset", {false});
-
-	this->get_parameter("pcd_file_path", pcd_file_path_);
-	this->get_parameter("pc_topic_name", pc_topic_name_);
-	this->get_parameter("orb_pc_topic_name", orb_pc_topic_name_);
-	this->get_parameter("ekf_pose_topic_name", ekf_pose_topic_name_);
-	this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
-	this->get_parameter("map_topic_name", map_topic_name_);
-	this->get_parameter("ndt_pc_topic_name", ndt_pc_topic_name_);
-	this->get_parameter("map_frame_id", map_frame_id_);
-	this->get_parameter("is_publish_map", is_publish_map_);
-	this->get_parameter("is_pcl_offset", is_pcl_offset_);
-
 	this->declare_parameter<double>("VOXEL_SIZE", {0.2});
+	this->declare_parameter<double>("VOXEL_SIZE_MAP", {0.2});
 	this->declare_parameter<double>("LIMIT_RANGE", {20.0});
 	this->declare_parameter<double>("TRANS_EPSILON", {0.001});
 	this->declare_parameter<double>("STEP_SIZE", {0.1});
@@ -38,7 +27,19 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 	this->declare_parameter<double>("MAP_OFFSET_PITCH", {0.0});
 	this->declare_parameter<double>("MAP_OFFSET_YAW", {0.0});
 
+	this->get_parameter("pcd_file_path", pcd_file_path_);
+	this->get_parameter("pc_topic_name", pc_topic_name_);
+	// this->get_parameter("orb_pc_topic_name", orb_pc_topic_name_);
+	this->get_parameter("ekf_pose_topic_name", ekf_pose_topic_name_);
+	this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
+	this->get_parameter("map_topic_name", map_topic_name_);
+	this->get_parameter("ndt_pc_topic_name", ndt_pc_topic_name_);
+	this->get_parameter("map_frame_id", map_frame_id_);
+	this->get_parameter("is_publish_map", is_publish_map_);
+	this->get_parameter("is_pcl_offset", is_pcl_offset_);
+
 	this->get_parameter("VOXEL_SIZE", VOXEL_SIZE_);
+	this->get_parameter("VOXEL_SIZE_MAP", VOXEL_SIZE_MAP_);
 	this->get_parameter("LIMIT_RANGE", LIMIT_RANGE_);
 	this->get_parameter("TRANS_EPSILON", TRANS_EPSILON_);
 	this->get_parameter("STEP_SIZE", STEP_SIZE_);
@@ -66,11 +67,10 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
     ndt_pc_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         ndt_pc_topic_name_, rclcpp::QoS(1).reliable());
 
-
 	tfBuffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_);
 
-	std::cout << "is_publish_map_: " << is_publish_map_ << std::endl;
+	// std::cout << "is_publish_map_: " << is_publish_map_ << std::endl;
 	std::cout << "MATCHING_SCORE_TH_: " << MATCHING_SCORE_TH_ << std::endl;
 	map_pcl_ = std::make_shared<PointCloudType>();
 	current_pcl_ = std::make_shared<PointCloudType>();
@@ -78,60 +78,6 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 }
 
 MapMatcher::~MapMatcher(){}
-
-void MapMatcher::pc_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
-{
-	pc_time_ = msg->header.stamp;
-	pc_ = *msg;
-	// pcl::PointCloud<pcl::PointXYZI>::Ptr raw_current_pcl(new pcl::PointCloud<pcl::PointXYZI>);
-	PointCloudTypePtr raw_current_pcl(new PointCloudType);
-	pcl::fromROSMsg(*msg, *raw_current_pcl);
-
-	// downsampling
-	if(VOXEL_SIZE_ > 0) downsample_pcl(raw_current_pcl,current_pcl_, VOXEL_SIZE_);
-	else current_pcl_ = raw_current_pcl;
-
-	current_pcl_->is_dense = false;
-	current_pcl_->width = current_pcl_->size();
-
-	// offset
-	if(is_pcl_offset_){
-		geometry_msgs::msg::TransformStamped transform_stamped;
-		try{
-			// lookupTransform("変換のベースとなる座標系","変更したい対象の座標系",変更したい時間(過去データを扱う場合は注意が必要))
-			transform_stamped = tfBuffer_->lookupTransform("base_link", "map", tf2::TimePointZero); //座標系の変換 
-
-			// transform_stamped = buffer_->lookupTransform("base_link", msg->header.frame_id, rclcpp::Time(0)); 
-		}
-		catch(tf2::TransformException& ex){
-			// ROS_WARN("%s", ex.what());
-			return;
-		}	
-		Eigen::Matrix4f transform = tf2::transformToEigen(transform_stamped.transform).matrix().cast<float>();
-		pcl::transformPointCloud(*current_pcl_, *current_pcl_, transform);
-	}
-	has_received_pc_ = true;
-}
-
-/*
-void MapMatcher::orb_pc_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
-{
-	orb_pc_ =*msg;
-}
-*/
-
-void MapMatcher::ekf_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
-{
-	ekf_pose_ = *msg;
-	has_received_ekf_pose_ = true;
-}
-
-/*
-void MapMatcher::map_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
-{
-
-}
-*/
 
 void MapMatcher::init_map() 
 {
@@ -173,7 +119,6 @@ void MapMatcher::read_map()
 	}
 
 	// load map
-	// pcl::PointCloud<pcl::PointXYZI>::Ptr raw_cloud(new pcl::PointCloud<pcl::PointXYZI>);
 	PointCloudTypePtr raw_cloud(new PointCloudType);
 	if(pcd_file_path_ == ""){
 		// ROS_ERROR("No map entered");
@@ -181,7 +126,6 @@ void MapMatcher::read_map()
 		return;
 	}
 	if(pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_file_path_,*raw_cloud) == -1){
-		// ROS_ERROR("Cloud not find a map");
 		std::cout << "could not read map" << std::endl;
 		return;
 	}
@@ -189,9 +133,10 @@ void MapMatcher::read_map()
 
 	std::cout  << "raw map_points: " << raw_cloud->points.size() << std::endl;
 	// downsampling
-	// if(VOXEL_SIZE_ > 0) downsample_pcl(raw_cloud,map_pcl_,VOXEL_SIZE_);
-	// else map_pcl_ = raw_cloud;
-	map_pcl_ = raw_cloud;
+	if(VOXEL_SIZE_MAP_ > 0) downsample_pcl(raw_cloud, map_pcl_, VOXEL_SIZE_MAP_);
+	else *map_pcl_ = *raw_cloud;
+	// map_pcl_ = raw_cloud;
+
 	std::cout  << "down map_points: " << map_pcl_->points.size() << std::endl;
 
 	// offset
@@ -205,32 +150,71 @@ void MapMatcher::read_map()
 		pcl::toROSMsg(*map_pcl_, map);
 		//map.header.stamp = ros::Time(0);
 		// map.header.frame_id = map_frame_id_;
-		int count_pub = 0;
 		map.header.frame_id = "map";
 		map_pub_->publish(map);
-		// while(count_pub < 5000){
-			map_pub_->publish(map);
-			count_pub ++;
-		// }
 		std::cout << "publish map point cloud!!" << std::endl;
+		is_publish_map_ = false;
 	}
 
 	has_read_map_ = true;
 }
 
+void MapMatcher::pc_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
+{
+	pc_time_ = msg->header.stamp;
+	pc_ = *msg;
+	PointCloudTypePtr raw_current_pcl(new PointCloudType);
+	pcl::fromROSMsg(*msg, *raw_current_pcl);
+
+	// downsampling
+	if(VOXEL_SIZE_ > 0) downsample_pcl(raw_current_pcl, current_pcl_, VOXEL_SIZE_);
+	else current_pcl_ = raw_current_pcl;
+	current_pcl_->is_dense = false;
+	current_pcl_->width = current_pcl_->size();
+	// offset
+	if(is_pcl_offset_){
+		geometry_msgs::msg::TransformStamped transform_stamped;
+		try{
+			// lookupTransform("変換のベースとなる座標系","変更したい対象の座標系",変更したい時間(過去データを扱う場合は注意が必要))
+			transform_stamped = tfBuffer_->lookupTransform("base_link", "map", tf2::TimePointZero); //座標系の変換 
+		}
+		catch(tf2::TransformException& ex){
+			// ROS_WARN("%s", ex.what());
+			return;
+		}	
+		Eigen::Matrix4f transform = tf2::transformToEigen(transform_stamped.transform).matrix().cast<float>();
+		pcl::transformPointCloud(*current_pcl_, *current_pcl_, transform);
+	}
+	has_received_pc_ = true;
+}
+
+void MapMatcher::ekf_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
+{
+	ekf_pose_ = *msg;
+	has_received_ekf_pose_ = true;
+}
+
+/*
+void MapMatcher::map_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
+{
+
+}
+*/
+
+
 void MapMatcher::downsample_pcl(pcl::PointCloud<pcl::PointXYZI>::Ptr input_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr& output_pcl, double voxel_size)
 {
+	PointCloudTypePtr output_tmp(new PointCloudType);
 	pcl::VoxelGrid<pcl::PointXYZI> voxel_sampler;
 	voxel_sampler.setLeafSize(voxel_size,voxel_size,voxel_size);
 	voxel_sampler.setInputCloud(input_pcl);
-	voxel_sampler.filter(*output_pcl);
+	voxel_sampler.filter(*output_tmp);
+	*output_pcl = *output_tmp;
 }
 
 void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr local_pcl)
 {
 	// passthrough
-	// pcl::PointCloud<pcl::PointXYZI>::Ptr map_local_pcl(new pcl::PointCloud<pcl::PointXYZI>);
-	// pcl::PointCloud<pcl::PointXYZI>::Ptr current_local_pcl(new pcl::PointCloud<pcl::PointXYZI>);
 	PointCloudTypePtr map_local_pcl(new PointCloudType);
 	PointCloudTypePtr current_local_pcl(new PointCloudType);
 	std::cout << "map_pcl_ size: " << map_pcl_->points.size() << std::endl;
@@ -247,9 +231,8 @@ void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::Poin
 	Eigen::Matrix4f init_guess = (init_translation*init_rotation).matrix();
 
 	// align
-	// pcl::PointCloud<pcl::PointXYZI>::Ptr ndt_pcl(new pcl::PointCloud<pcl::PointXYZI>);
 	PointCloudTypePtr ndt_pcl(new PointCloudType);
-	pcl::NormalDistributionsTransform<pcl::PointXYZI,pcl::PointXYZI> ndt;
+	pclomp::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
 	ndt.setTransformationEpsilon(TRANS_EPSILON_);
 	ndt.setStepSize(STEP_SIZE_);
 	ndt.setResolution(RESOLUTION_);
@@ -261,11 +244,15 @@ void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::Poin
 	}
 	ndt.setInputTarget(map_local_pcl);
 	ndt.setInputSource(current_local_pcl);
+
+	ndt.setNumThreads(std::thread::hardware_concurrency());
+  	ndt.setNeighborhoodSearchMethod(pclomp::DIRECT7);
+
 	if(current_local_pcl->points.size() > map_local_pcl->points.size()){
 		std::cout << "local clouds > map clouds" << std::endl;
 		return;
 	}
-	ndt.align(*ndt_pcl,init_guess);
+	ndt.align(*ndt_pcl, init_guess);
 	//ndt.align(*ndt_pcl,Eigen::Matrix4f::Identity());
 	if(!ndt.hasConverged()){
 		std::cout << "Has converged" << std::endl;
@@ -297,21 +284,9 @@ void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::Poin
 		ndt_msg.header.stamp = pc_time_;
 		ndt_msg.header.frame_id = map_frame_id_;
 		ndt_pc_pub_->publish(ndt_msg);
-
-		//debug
-		double roll, pitch, yaw;
-		tf2::Quaternion q;
-		tf2::fromMsg(ndt_pose.pose.orientation,q);
-		tf2::Matrix3x3 r(q);
-		r.getRPY(roll,pitch,yaw);
-		std::cout << "NDT POSE: " << std::endl;
-		std::cout << " X : " << ndt_pose.pose.position.x << std::endl;
-		std::cout << " Y : " << ndt_pose.pose.position.y << std::endl;
-		std::cout << "YAW: " << yaw << std::endl;
-		std::cout << std::endl;
 	}
 	else{
-		std::cout << "Cannot match due to high sum of squared distance between clouds" << std::endl;
+		std::cout << "Fitness score is large " << std::endl;
 	}
 }
 
@@ -362,10 +337,10 @@ Eigen::Quaternionf MapMatcher::msg_to_quat_eigen(geometry_msgs::msg::Quaternion 
 
 void MapMatcher::process()
 {
+	// std::cout << "is_read_map: " << has_read_map_ << std::endl;
+	// std::cout << "is_ekf_pose: " << has_received_ekf_pose_ << std::endl;
+	// std::cout << "is_rec_pc: " << has_received_pc_ << std::endl;
 	if(has_read_map_ && has_received_ekf_pose_ && has_received_pc_){
-		std::cout << "is_read_map: " << has_read_map_ << std::endl;
-		std::cout << "is_ekf_pose: " << has_received_ekf_pose_ << std::endl;
-		std::cout << "is_rec_pc: " << has_received_pc_ << std::endl;
 		matching(map_pcl_,current_pcl_);
 		has_received_pc_ = false;
 		has_received_ekf_pose_ = false;
@@ -375,14 +350,10 @@ void MapMatcher::process()
 
 int main(int argc,char** argv)
 {
-	// ros::init(argc,argv,"map_matcher");
-	// MapMatcher matcher;
 	std::cout << "---map_matcher---" << std::endl;
     rclcpp::init(argc, argv); // ノードの初期化
     auto node = std::make_shared<MapMatcher>();
-	// std::cout << "before read_map" << std::endl;
 	node->read_map();
-	// std::cout << "after read_map" << std::endl;
 	rclcpp::Rate rate(10.0);
 	while(rclcpp::ok()){
 		node->process();

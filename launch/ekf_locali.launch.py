@@ -2,6 +2,10 @@ import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+from launch.actions import IncludeLaunchDescription
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
+from launch.actions import TimerAction
 
 def generate_launch_description():
     # パラメータファイルのパスを取得
@@ -9,28 +13,37 @@ def generate_launch_description():
         get_package_share_directory('ekf_localizer'),  # パッケージ名
         'config',  # ディレクトリ名
         'ekf',  # サブディレクトリ
-        'ekf.yaml'  # ファイル名
+        # 'ekf.yaml'  # ファイル名
+        'ekf_siminkaikan.yaml'  # ファイル名
     )
     params_map_matcher = os.path.join(
         get_package_share_directory('ekf_localizer'),  # パッケージ名
         'config',  # ディレクトリ名
         'map_matcher',  # サブディレクトリ
-        'map_matcher.yaml'  # ファイル名
+        # 'map_matcher.yaml'  # ファイル名
+        'map_matcher_siminkaikan.yaml'  # ファイル名
     )
     pcd_params = {
-        "file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd",
+        "file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapkakunin_seg.pcd",
         "frame_id": "map",
         "publish_rate": 0.5
     }
 
     return LaunchDescription([
+        # IncludeLaunchDescription(
+        #     PathJoinSubstitution(
+        #         [FindPackageShare("cub_visualization"), "launch", "rviz.launch.py"]
+        #     ),
+        # ),
         # ノード1: EKF Localizer
         Node(
             package='ekf_localizer',
             executable='ekf_localizer_node',
             name='ekf_localizer_node',
             parameters=[params_ekf],
-            # output='screen',  # 標準出力を表示するように設定
+            # remappings=[('/ekf_pose', '/test/ekf_pose'),
+            #                     ('/ndt_pose', '/test/ndt_pose')],
+            output='screen',  # 標準出力を表示するように設定
         ),
         
         # ノード2: Map Matcher
@@ -39,6 +52,8 @@ def generate_launch_description():
             executable='map_matcher_node',
             name='map_matcher_node',
             parameters=[params_map_matcher],
+            # remappings=[('/ekf_pose', '/test/ekf_pose'),
+            #                     ('/ndt_pose', '/test/ndt_pose')],
             # output='screen',  # 標準出力を表示
         ),
 
@@ -47,6 +62,7 @@ def generate_launch_description():
             package='ekf_localizer',
             executable='tf_cub_node',
             name='tf_cub_node',
+            # remappings=[('/ekf_pose', '/test/ekf_pose')],
             # output='screen',  # 標準出力を表示
         ),
         # ↓なぜか/base_link座標系に出力されてしまい

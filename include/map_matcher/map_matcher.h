@@ -1,34 +1,37 @@
 #ifndef MAP_MATCHER_H_
 #define MAP_MATCHER_H_
 
-#include <rclcpp/rclcpp.hpp>
+#include <memory>
+#include <thread>
 
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl/features/normal_3d.h>
+// #include <pcl/point_cloud.h>
+// #include <pcl/point_types.h>
+// #include <pcl/features/normal_3d.h>
 #include <pcl/registration/ndt.h>
-#include <pcl/registration/correspondence_types.h>
-#include <pcl/registration/correspondence_estimation.h>
-#include <pcl/filters/approximate_voxel_grid.h>
+// #include <pcl/registration/correspondence_types.h>
+// #include <pcl/registration/correspondence_estimation.h>
+// #include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
-#include <pcl/filters/crop_box.h>
+// #include <pcl/filters/crop_box.h>
 #include <pcl/io/io.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <tf2_eigen/tf2_eigen.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include "tf2_ros/transform_listener.h"
+#include <tf2_ros/buffer.h>
 
 #include <Eigen/Dense>
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
+// #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <pclomp/ndt_omp.h>
+
 
 class MapMatcher : public rclcpp::Node
 {
@@ -97,6 +100,7 @@ private:
 	bool is_pcl_offset_;
 
 	double VOXEL_SIZE_;
+	double VOXEL_SIZE_MAP_;
 	double LIMIT_RANGE_;
 	double TRANS_EPSILON_;
 	double STEP_SIZE_;

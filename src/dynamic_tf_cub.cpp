@@ -4,16 +4,19 @@ DynamicTfCub::DynamicTfCub() : Node("DynamicTFCub")
     /*subscriber*/
     // sub_current_pose = nh.subscribe("/ekf_pose", 10, &DynamicTfCub::current_pose_callback, this);
     sub_current_pose   = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/ekf_pose", rclcpp::QoS(1).reliable(),
+        "/test/ekf_pose", rclcpp::QoS(1).reliable(),
         std::bind(&DynamicTfCub::current_pose_callback, this, std::placeholders::_1));
 
 	tfBuffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     // dynamic_br_ = std::make_shared<tf2_ros::TransformBroadcaster>(*tfBuffer_);
     dynamic_br_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
+    std::cout << "done setting TF" << std::endl;
 }
 DynamicTfCub::~DynamicTfCub(){}
 void DynamicTfCub::current_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
 {
+    std::cout << "callback TF" << std::endl;
     current_pose = *msg;
     pub_dynamic_tf();
     // pub_static_tf();
@@ -57,6 +60,7 @@ void DynamicTfCub::pub_dynamic_tf()
     transformStamped.transform.rotation.z = current_pose.pose.orientation.z;
     transformStamped.transform.rotation.w = current_pose.pose.orientation.w;
     dynamic_br_->sendTransform(transformStamped);
+    std::cout << "send map base_link TF" << std::endl;
 }
 
 void DynamicTfCub::process()

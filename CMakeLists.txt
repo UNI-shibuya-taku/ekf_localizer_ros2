@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
 project(ekf_localizer)
 
+# add_compile_options(-std=c++14 -Wall)
+
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
@@ -20,6 +22,8 @@ find_package(rclcpp REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED)
+find_package(ndt_omp REQUIRED)
+# find_package(pclomp REQUIRED)
 
 ament_auto_find_build_dependencies()
 
@@ -28,10 +32,18 @@ ament_auto_find_build_dependencies()
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+find_package(OpenMP)
+if(OPENMP_FOUND)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+endif()
+
 include_directories(
   include
   ${PCL_INCLUDE_DIRS}
   ${rclcpp_INCLUDE_DIRS}
+  ${Eigen_INCLUDE_DIRS}
+  ${ndt_omp_INCLUDE_DIRS}
 )
 
 
@@ -63,6 +75,7 @@ ament_auto_package(
 )
 
 
+
 add_executable(map_matcher_node 
   src/map_matcher.cpp
 )
@@ -72,6 +85,7 @@ target_link_libraries(map_matcher_node
   # ${rclcpp_lifecycle_LIBRARIES}
   ${YAML_CPP_LIBRARIES}
   ${std_msgs_LIBRARIES}
+  ${ndt_omp_LIBRARIES}
 )
 ament_target_dependencies(map_matcher_node
   rclcpp
@@ -85,6 +99,8 @@ ament_target_dependencies(map_matcher_node
   tf2_ros
   pcl_conversions
   tf2_eigen
+  # pclomp
+  ndt_omp
   # xmlrpcpp
 )
 install(TARGETS
