@@ -4,7 +4,6 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 {
 	this->declare_parameter<std::string>("pcd_file_path", "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd");
 	this->declare_parameter<std::string>("pc_topic_name", {"/velodyne_points"});
-	// this->declare_parameter<std::string>("orb_pc_topic_name", "orb_pc_in");
 	this->declare_parameter<std::string>("ekf_pose_topic_name", {"/test/ekf_pose"});
 	this->declare_parameter<std::string>("ndt_pose_topic_name", {"/test/ndt_pose"});
 	this->declare_parameter<std::string>("map_topic_name", {"map_out"});
@@ -29,7 +28,6 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 
 	this->get_parameter("pcd_file_path", pcd_file_path_);
 	this->get_parameter("pc_topic_name", pc_topic_name_);
-	// this->get_parameter("orb_pc_topic_name", orb_pc_topic_name_);
 	this->get_parameter("ekf_pose_topic_name", ekf_pose_topic_name_);
 	this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
 	this->get_parameter("map_topic_name", map_topic_name_);
@@ -59,6 +57,9 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
     ekf_pose_sub_  = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         ekf_pose_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&MapMatcher::ekf_pose_callback, this, std::placeholders::_1));
+    // map_sub_  = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    //     "/cloud_pcd/map", rclcpp::QoS(1).reliable(),
+    //     std::bind(&MapMatcher::map_callback, this, std::placeholders::_1));
 
     ndt_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
         ndt_pose_topic_name_, rclcpp::QoS(1).reliable());
@@ -70,14 +71,218 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 	tfBuffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_);
 
-	// std::cout << "is_publish_map_: " << is_publish_map_ << std::endl;
 	std::cout << "MATCHING_SCORE_TH_: " << MATCHING_SCORE_TH_ << std::endl;
 	map_pcl_ = std::make_shared<PointCloudType>();
 	current_pcl_ = std::make_shared<PointCloudType>();
-
 }
 
 MapMatcher::~MapMatcher(){}
+
+
+void MapMatcher::pc_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
+{
+	pc_time_ = msg->header.stamp;
+	pc_ = *msg;
+	PointCloudTypePtr raw_current_pcl(new PointCloudType);
+	pcl::fromROSMsg(*msg, *raw_current_pcl);
+
+	// downsampling
+	if(VOXEL_SIZE_ > 0) downsample_pcl(raw_current_pcl, current_pcl_, VOXEL_SIZE_);
+	else current_pcl_ = raw_current_pcl;
+	current_pcl_->is_dense = false;
+	current_pcl_->width = current_pcl_->size();
+	// offset
+	if(is_pcl_offset_){
+		geometry_msgs::msg::TransformStamped transform_stamped;
+		try{
+			// lookupTransform("変換のベースとなる座標系","変更したい対象の座標系",変更したい時間(過去データを扱う場合は注意が必要))
+			transform_stamped = tfBuffer_->lookupTransform("base_link", "map", tf2::TimePointZero); //座標系の変換 
+		}
+		catch(tf2::TransformException& ex){
+			// ROS_WARN("%s", ex.what());
+			return;
+		}	
+		Eigen::Matrix4f transform = tf2::transformToEigen(transform_stamped.transform).matrix().cast<float>();
+		pcl::transformPointCloud(*current_pcl_, *current_pcl_, transform);
+	}
+	has_received_pc_ = true;
+}
+
+void MapMatcher::ekf_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
+{
+	ekf_pose_ = *msg;
+	has_received_ekf_pose_ = true;
+}
+
+void MapMatcher::map_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
+{
+	if(!is_first_map_){
+		PointCloudTypePtr raw_cloud(new PointCloudType);
+		pcl::fromROSMsg(*msg, *raw_cloud);
+
+		std::cout  << "raw map_points: " << raw_cloud->points.size() << std::endl;
+		// downsampling
+		if(VOXEL_SIZE_MAP_ > 0) downsample_pcl(raw_cloud, map_pcl_, VOXEL_SIZE_MAP_);
+		else *map_pcl_ = *raw_cloud;
+		// map_pcl_ = raw_cloud;
+
+		std::cout  << "down map_points: " << map_pcl_->points.size() << std::endl;
+
+		// offset
+		Eigen::Vector3f offset_position(MAP_OFFSET_X_, MAP_OFFSET_Y_, MAP_OFFSET_Z_);
+		Eigen::Quaternionf offset_orientation = msg_to_quat_eigen(rpy_to_msg(MAP_OFFSET_ROLL_, MAP_OFFSET_PITCH_, MAP_OFFSET_YAW_));
+		pcl::transformPointCloud(*map_pcl_, *map_pcl_, offset_position, offset_orientation);
+		is_first_map_ = true;
+		has_read_map_ = true;
+	}
+}
+
+void MapMatcher::downsample_pcl(pcl::PointCloud<pcl::PointXYZI>::Ptr input_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr& output_pcl, double voxel_size)
+{
+	PointCloudTypePtr output_tmp(new PointCloudType);
+	pcl::VoxelGrid<pcl::PointXYZI> voxel_sampler;
+	voxel_sampler.setLeafSize(voxel_size,voxel_size,voxel_size);
+	voxel_sampler.setInputCloud(input_pcl);
+	voxel_sampler.filter(*output_tmp);
+	*output_pcl = *output_tmp;
+}
+
+void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr local_pcl)
+{
+	// passthrough
+	PointCloudTypePtr map_local_pcl(new PointCloudType);
+	PointCloudTypePtr current_local_pcl(new PointCloudType);
+	std::cout << "map_pcl_ size: " << map_pcl_->points.size() << std::endl;
+	set_pcl(map_pcl_, map_local_pcl, ekf_pose_.pose.position.x, ekf_pose_.pose.position.y, ekf_pose_.pose.position.z);
+	std::cout << "map_local_pcl_ size: " << map_local_pcl->points.size() << std::endl;
+	std::cout << "cur_pcl_ size: " << current_pcl_->points.size() << std::endl;
+	set_pcl(current_pcl_,current_local_pcl,0.0,0.0,0.0);
+	std::cout << "cur_local_pcl_ size: " << current_local_pcl->points.size() << std::endl;
+
+	if(map_local_pcl->points.empty() || current_local_pcl->points.empty()){
+		if(map_local_pcl->points.empty()) std::cout << "map_local_pcl is empty" << std::endl;
+		if(current_local_pcl->points.empty()) std::cout << "current_local_pcl is empty" << std::endl;
+		return;
+	}
+	if(current_local_pcl->points.size() > map_local_pcl->points.size()){
+		std::cout << "local clouds > map clouds" << std::endl;
+		return;
+	}
+
+	// initialize
+	Eigen::AngleAxisf init_rotation(msg_to_quat_eigen(ekf_pose_.pose.orientation));
+	// Eigen::AngleAxisf init_rotation((float)get_yaw_from_quat(ekf_pose_.pose.orientation), Eigen::Vector3f::UnitZ());
+	Eigen::Translation3f init_translation((float)ekf_pose_.pose.position.x, (float)ekf_pose_.pose.position.y, (float)ekf_pose_.pose.position.z);
+	Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix();
+
+	// align
+	PointCloudTypePtr ndt_pcl(new PointCloudType);
+	pclomp::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
+	ndt.setTransformationEpsilon(TRANS_EPSILON_);
+	ndt.setStepSize(STEP_SIZE_);
+	ndt.setResolution(RESOLUTION_);
+	ndt.setMaximumIterations(MAX_ITERATION_);
+	ndt.setInputTarget(map_local_pcl);
+	ndt.setInputSource(current_local_pcl);
+	ndt.setNumThreads(std::thread::hardware_concurrency());
+  	ndt.setNeighborhoodSearchMethod(pclomp::DIRECT7);
+	ndt.align(*ndt_pcl, init_guess);
+	//ndt.align(*ndt_pcl,Eigen::Matrix4f::Identity());
+	if(!ndt.hasConverged()){
+		std::cout << "Has converged" << std::endl;
+		return;
+	}
+
+	std::cout << "FitnessScore: " << ndt.getFitnessScore() << std::endl;
+	// if(ndt.getFitnessScore() <= MATCHING_SCORE_TH_){
+		Eigen::Matrix4f translation = ndt.getFinalTransformation();	
+		if(translation.isZero(1e-6))
+		{
+			return;
+		}
+		Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
+		quaternion.normalize();
+
+		// publish_ndt_pose
+		geometry_msgs::msg::PoseStamped ndt_pose;
+		ndt_pose.pose.position.x = translation(0,3);
+		ndt_pose.pose.position.y = translation(1,3);
+		ndt_pose.pose.position.z = translation(2,3);
+		//ndt_pose.pose.position.z = 0.0;
+		ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
+		ndt_pose.header.stamp = ekf_pose_.header.stamp;
+		ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
+		ndt_pose_pub_->publish(ndt_pose);
+
+		// publish ndt_pcl
+		sensor_msgs::msg::PointCloud2 ndt_msg;
+		pcl::toROSMsg(*ndt_pcl,ndt_msg);
+		ndt_msg.header.stamp = pc_time_;
+		ndt_msg.header.frame_id = map_frame_id_;
+		ndt_pc_pub_->publish(ndt_msg);
+	// }
+	// else{
+	// 	std::cout << "Fitness score is large " << std::endl;
+	// }
+}
+
+double MapMatcher::get_yaw_from_quat(geometry_msgs::msg::Quaternion q)
+{
+	double r, p, y;
+	tf2::Quaternion quaternion(q.x,q.y,q.z,q.w);
+	tf2::Matrix3x3(quaternion).getRPY(r,p,y);
+
+	return y;
+}
+
+geometry_msgs::msg::Quaternion MapMatcher::rpy_to_msg(double roll, double pitch, double yaw)
+{
+	geometry_msgs::msg::Quaternion msg;
+	tf2::Quaternion quaternion;
+	quaternion.setRPY(roll,pitch,yaw);
+	msg.x = quaternion.x();
+	msg.y = quaternion.y();
+	msg.z = quaternion.z();
+	msg.w = quaternion.w();
+
+	return msg;
+}
+
+geometry_msgs::msg::Quaternion MapMatcher::quat_eigen_to_msg(Eigen::Quaternionf q)
+{
+	geometry_msgs::msg::Quaternion msg;
+	msg.x = (double)q.x();
+	msg.y = (double)q.y();
+	msg.z = (double)q.z();
+	msg.w = (double)q.w();
+
+	return msg;
+}
+
+Eigen::Quaternionf MapMatcher::msg_to_quat_eigen(geometry_msgs::msg::Quaternion q)
+{
+	Eigen::Quaternionf quaternion;
+	quaternion.x() = (float)q.x;
+	quaternion.y() = (float)q.y;
+	quaternion.z() = (float)q.z;
+	quaternion.w() = (float)q.w;
+	quaternion.normalize();
+
+	return quaternion;
+}
+
+void MapMatcher::process()
+{
+	// std::cout << "is_read_map: " << has_read_map_ << std::endl;
+	// std::cout << "is_ekf_pose: " << has_received_ekf_pose_ << std::endl;
+	// std::cout << "is_rec_pc: " << has_received_pc_ << std::endl;
+	if(has_read_map_ && has_received_ekf_pose_ && has_received_pc_){
+		matching(map_pcl_,current_pcl_);
+		has_received_pc_ = false;
+		has_received_ekf_pose_ = false;
+	}
+	else if(has_read_map_) std::cout << "Waiting msg" << std::endl;
+}
 
 void MapMatcher::init_map() 
 {
@@ -159,206 +364,17 @@ void MapMatcher::read_map()
 	has_read_map_ = true;
 }
 
-void MapMatcher::pc_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
-{
-	pc_time_ = msg->header.stamp;
-	pc_ = *msg;
-	PointCloudTypePtr raw_current_pcl(new PointCloudType);
-	pcl::fromROSMsg(*msg, *raw_current_pcl);
-
-	// downsampling
-	if(VOXEL_SIZE_ > 0) downsample_pcl(raw_current_pcl, current_pcl_, VOXEL_SIZE_);
-	else current_pcl_ = raw_current_pcl;
-	current_pcl_->is_dense = false;
-	current_pcl_->width = current_pcl_->size();
-	// offset
-	if(is_pcl_offset_){
-		geometry_msgs::msg::TransformStamped transform_stamped;
-		try{
-			// lookupTransform("変換のベースとなる座標系","変更したい対象の座標系",変更したい時間(過去データを扱う場合は注意が必要))
-			transform_stamped = tfBuffer_->lookupTransform("base_link", "map", tf2::TimePointZero); //座標系の変換 
-		}
-		catch(tf2::TransformException& ex){
-			// ROS_WARN("%s", ex.what());
-			return;
-		}	
-		Eigen::Matrix4f transform = tf2::transformToEigen(transform_stamped.transform).matrix().cast<float>();
-		pcl::transformPointCloud(*current_pcl_, *current_pcl_, transform);
-	}
-	has_received_pc_ = true;
-}
-
-void MapMatcher::ekf_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
-{
-	ekf_pose_ = *msg;
-	has_received_ekf_pose_ = true;
-}
-
-/*
-void MapMatcher::map_callback(const sensor_msgs::PointCloud2ConstPtr& msg)
-{
-
-}
-*/
-
-
-void MapMatcher::downsample_pcl(pcl::PointCloud<pcl::PointXYZI>::Ptr input_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr& output_pcl, double voxel_size)
-{
-	PointCloudTypePtr output_tmp(new PointCloudType);
-	pcl::VoxelGrid<pcl::PointXYZI> voxel_sampler;
-	voxel_sampler.setLeafSize(voxel_size,voxel_size,voxel_size);
-	voxel_sampler.setInputCloud(input_pcl);
-	voxel_sampler.filter(*output_tmp);
-	*output_pcl = *output_tmp;
-}
-
-void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::PointCloud<pcl::PointXYZI>::Ptr local_pcl)
-{
-	// passthrough
-	PointCloudTypePtr map_local_pcl(new PointCloudType);
-	PointCloudTypePtr current_local_pcl(new PointCloudType);
-	std::cout << "map_pcl_ size: " << map_pcl_->points.size() << std::endl;
-	set_pcl(map_pcl_, map_local_pcl, ekf_pose_.pose.position.x, ekf_pose_.pose.position.y, ekf_pose_.pose.position.z);
-	std::cout << "map_local_pcl_ size: " << map_local_pcl->points.size() << std::endl;
-	std::cout << "cur_pcl_ size: " << current_pcl_->points.size() << std::endl;
-	set_pcl(current_pcl_,current_local_pcl,0.0,0.0,0.0);
-	std::cout << "cur_local_pcl_ size: " << current_local_pcl->points.size() << std::endl;
-
-	// initialize
-	//Eigen::AngleAxisf init_rotation(msg_to_quat_eigen(ekf_pose_.pose.orientation));
-	Eigen::AngleAxisf init_rotation((float)get_yaw_from_quat(ekf_pose_.pose.orientation),Eigen::Vector3f::UnitZ());
-	Eigen::Translation3f init_translation((float)ekf_pose_.pose.position.x,(float)ekf_pose_.pose.position.y,(float)ekf_pose_.pose.position.z);
-	Eigen::Matrix4f init_guess = (init_translation*init_rotation).matrix();
-
-	// align
-	PointCloudTypePtr ndt_pcl(new PointCloudType);
-	pclomp::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
-	ndt.setTransformationEpsilon(TRANS_EPSILON_);
-	ndt.setStepSize(STEP_SIZE_);
-	ndt.setResolution(RESOLUTION_);
-	ndt.setMaximumIterations(MAX_ITERATION_);
-	if(map_local_pcl->points.empty() || current_local_pcl->points.empty()){
-		if(map_local_pcl->points.empty()) std::cout << "map_local_pcl is empty" << std::endl;
-		if(current_local_pcl->points.empty()) std::cout << "current_local_pcl is empty" << std::endl;
-		return;
-	}
-	ndt.setInputTarget(map_local_pcl);
-	ndt.setInputSource(current_local_pcl);
-
-	ndt.setNumThreads(std::thread::hardware_concurrency());
-  	ndt.setNeighborhoodSearchMethod(pclomp::DIRECT7);
-
-	if(current_local_pcl->points.size() > map_local_pcl->points.size()){
-		std::cout << "local clouds > map clouds" << std::endl;
-		return;
-	}
-	ndt.align(*ndt_pcl, init_guess);
-	//ndt.align(*ndt_pcl,Eigen::Matrix4f::Identity());
-	if(!ndt.hasConverged()){
-		std::cout << "Has converged" << std::endl;
-		return;
-	}
-
-	std::cout << "FitnessScore: " << ndt.getFitnessScore() << std::endl;
-	std::cout << std::endl;
-
-	if(ndt.getFitnessScore() <= MATCHING_SCORE_TH_){
-		Eigen::Matrix4f translation = ndt.getFinalTransformation();	
-		Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
-		quaternion.normalize();
-
-		// publish_ndt_pose
-		geometry_msgs::msg::PoseStamped ndt_pose;
-		ndt_pose.pose.position.x = translation(0,3);
-		ndt_pose.pose.position.y = translation(1,3);
-		ndt_pose.pose.position.z = translation(2,3);
-		//ndt_pose.pose.position.z = 0.0;
-		ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
-		ndt_pose.header.stamp = ekf_pose_.header.stamp;
-		ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
-		ndt_pose_pub_->publish(ndt_pose);
-
-		// publish ndt_pcl
-		sensor_msgs::msg::PointCloud2 ndt_msg;
-		pcl::toROSMsg(*ndt_pcl,ndt_msg);
-		ndt_msg.header.stamp = pc_time_;
-		ndt_msg.header.frame_id = map_frame_id_;
-		ndt_pc_pub_->publish(ndt_msg);
-	}
-	else{
-		std::cout << "Fitness score is large " << std::endl;
-	}
-}
-
-double MapMatcher::get_yaw_from_quat(geometry_msgs::msg::Quaternion q)
-{
-	double r, p, y;
-	tf2::Quaternion quaternion(q.x,q.y,q.z,q.w);
-	tf2::Matrix3x3(quaternion).getRPY(r,p,y);
-
-	return y;
-}
-
-geometry_msgs::msg::Quaternion MapMatcher::rpy_to_msg(double roll, double pitch, double yaw)
-{
-	geometry_msgs::msg::Quaternion msg;
-	tf2::Quaternion quaternion;
-	quaternion.setRPY(roll,pitch,yaw);
-	msg.x = quaternion.x();
-	msg.y = quaternion.y();
-	msg.z = quaternion.z();
-	msg.w = quaternion.w();
-
-	return msg;
-}
-
-geometry_msgs::msg::Quaternion MapMatcher::quat_eigen_to_msg(Eigen::Quaternionf q)
-{
-	geometry_msgs::msg::Quaternion msg;
-	msg.x = (double)q.x();
-	msg.y = (double)q.y();
-	msg.z = (double)q.z();
-	msg.w = (double)q.w();
-
-	return msg;
-}
-
-Eigen::Quaternionf MapMatcher::msg_to_quat_eigen(geometry_msgs::msg::Quaternion q)
-{
-	Eigen::Quaternionf quaternion;
-	quaternion.x() = (float)q.x;
-	quaternion.y() = (float)q.y;
-	quaternion.z() = (float)q.z;
-	quaternion.w() = (float)q.w;
-	quaternion.normalize();
-
-	return quaternion;
-}
-
-void MapMatcher::process()
-{
-	// std::cout << "is_read_map: " << has_read_map_ << std::endl;
-	// std::cout << "is_ekf_pose: " << has_received_ekf_pose_ << std::endl;
-	// std::cout << "is_rec_pc: " << has_received_pc_ << std::endl;
-	if(has_read_map_ && has_received_ekf_pose_ && has_received_pc_){
-		matching(map_pcl_,current_pcl_);
-		has_received_pc_ = false;
-		has_received_ekf_pose_ = false;
-	}
-	else if(has_read_map_) std::cout << "Waiting msg" << std::endl;
-}
-
 int main(int argc,char** argv)
 {
 	std::cout << "---map_matcher---" << std::endl;
     rclcpp::init(argc, argv); // ノードの初期化
     auto node = std::make_shared<MapMatcher>();
 	node->read_map();
-	rclcpp::Rate rate(10.0);
+	// rclcpp::Rate rate(10.0);
 	while(rclcpp::ok()){
 		node->process();
 		rclcpp::spin_some(node);
-		rate.sleep();
+		// rate.sleep();
 	}
 	return 0;
 }

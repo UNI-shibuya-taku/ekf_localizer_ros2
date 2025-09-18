@@ -24,7 +24,7 @@ def generate_launch_description():
         'map_matcher_siminkaikan.yaml'  # ファイル名
     )
     pcd_params = {
-        "file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapkakunin_seg.pcd",
+        "file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_siminkaikan.pcd",
         "frame_id": "map",
         "publish_rate": 0.5
     }
@@ -43,7 +43,7 @@ def generate_launch_description():
             parameters=[params_ekf],
             # remappings=[('/ekf_pose', '/test/ekf_pose'),
             #                     ('/ndt_pose', '/test/ndt_pose')],
-            output='screen',  # 標準出力を表示するように設定
+            # output='screen',  # 標準出力を表示するように設定
         ),
         
         # ノード2: Map Matcher
@@ -52,8 +52,6 @@ def generate_launch_description():
             executable='map_matcher_node',
             name='map_matcher_node',
             parameters=[params_map_matcher],
-            # remappings=[('/ekf_pose', '/test/ekf_pose'),
-            #                     ('/ndt_pose', '/test/ndt_pose')],
             # output='screen',  # 標準出力を表示
         ),
 
@@ -62,7 +60,6 @@ def generate_launch_description():
             package='ekf_localizer',
             executable='tf_cub_node',
             name='tf_cub_node',
-            # remappings=[('/ekf_pose', '/test/ekf_pose')],
             # output='screen',  # 標準出力を表示
         ),
         # ↓なぜか/base_link座標系に出力されてしまい
@@ -72,11 +69,21 @@ def generate_launch_description():
         #     name='pcd_publisher',
         #     output='screen',  # ログをターミナルに表示
         #     parameters=[
-        #         {"file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd"},  # 正しいパラメータ名
-        #         {"frame_id": "map"},  # 座標フレーム名
+        #         {"file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_siminkaikan.pcd"},  # 正しいパラメータ名
+        #         {"frame_id": "/map"},  # 座標フレーム名
         #         {"publish_rate": 0.5}  # パブリッシュ間隔（Hz）
-        #     ]
-        # )
+        #     ],
+        # ),
+        # Node(
+        #     package='ekf_localizer',
+        #     executable='pcd_renamer',
+        #     name='pcd_renamer',
+        # ),
+        # Node(
+        #     package='ekf_localizer',
+        #     executable='draw_moving_trajectory_node',
+        #     name='draw_moving_trajectory_node',
+        # ),
     ])
 
 

@@ -74,9 +74,9 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tfListener_;
 	PointCloudTypePtr map_pcl_;
 	PointCloudTypePtr current_pcl_;
+	// PointCloudTypePtr map_pcl_callback_;
 
 	sensor_msgs::msg::PointCloud2 pc_;
-	sensor_msgs::msg::PointCloud2 orb_pc_;
 	geometry_msgs::msg::PoseStamped ekf_pose_;
 	rclcpp::Time pc_time_;
 	bool is_reset_ = true;
@@ -86,6 +86,8 @@ private:
 	bool has_read_map_ = false;
 	bool is_first;
 	bool is_publish_map_;
+	bool is_pcl_offset_;
+	bool is_first_map_ = false;
 
 	// parameter
 	std::string pcd_file_path_;
@@ -97,7 +99,6 @@ private:
 	std::string ndt_pc_topic_name_;
 	std::string map_frame_id_;
 
-	bool is_pcl_offset_;
 
 	double VOXEL_SIZE_;
 	double VOXEL_SIZE_MAP_;

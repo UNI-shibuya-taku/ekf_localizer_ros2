@@ -33,9 +33,11 @@ private:
 	void set_pose(double x,double y,double z,double roll,double pitch,double yaw);
 	void calc_rpy_from_quat(geometry_msgs::msg::Quaternion q,double& roll,double& pitch,double& yaw);
 	
-	void motion_update_3DoF(bool is_odom, double dt);
+	void motion_update_3DoF(double dt);
 	void motion_update_6DoF(double dt);
-	void motion_update(bool is_odom, double dt);
+	void motion_update(double dt);
+	void motion_update_by_imu(double dt);
+	void motion_update_by_odom(double dt);
 	void measurement_update();
 	void measurement_update_3DoF();
 	void measurement_update_6DoF();
@@ -120,6 +122,7 @@ private:
 	double th_covariance_;
 	double th_pose_covariance_;
 	double th_direction_covariance_;
+	double dt_;
 
 	int STATE_SIZE_;
 	Eigen::VectorXd X_;
@@ -129,5 +132,6 @@ private:
     bool first_callback_ = true;
 	geometry_msgs::msg::Point last_position_;
 	Eigen::Vector3d last_odom_pose_ = Eigen::Vector3d::Zero();
+	double last_odom_yaw_;
 };
 #endif	// EKF_H_

@@ -61,7 +61,6 @@ EKF::EKF() : Node("EKF")
 	this->get_parameter("TH_POSE_COVARIANCE", th_pose_covariance_);
 	this->get_parameter("TH_DIRECTION_COVARIANCE", th_direction_covariance_);
 
-
     ndt_pose_sub_  = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         ndt_pose_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&EKF::ndt_pose_callback, this, std::placeholders::_1));
@@ -83,11 +82,17 @@ EKF::EKF() : Node("EKF")
 	is_measurement_.data = false;
 	// last_time_ = this->get_clock()->now();
 	ekf_pose_trajectry.header.frame_id = "map"; 
+	std::cout << "\n[THRESHOLD PARAMETERS]" << std::endl;
+    std::cout << "  TH_MAHALANOBIS          : " << std::fixed << th_mahalanobis_ << std::endl;
+    std::cout << "  TH_COVARIANCE           : " << std::fixed  << th_covariance_ << std::endl;
+    std::cout << "  TH_POSE_COVARIANCE      : " << std::fixed << th_pose_covariance_ << std::endl;
+    std::cout << "  TH_DIRECTION_COVARIANCE : " << std::fixed << th_direction_covariance_ << std::endl;
+
 }
 
 EKF::~EKF() {}
 
-void EKF::initialize(double x,double y,double z,double roll,double pitch,double yaw)
+void EKF::initialize(double x, double y, double z, double roll, double pitch, double yaw)
 {
 	if(is_3DoF_) STATE_SIZE_ = 3;
 	else STATE_SIZE_ = 6;
@@ -95,9 +100,10 @@ void EKF::initialize(double x,double y,double z,double roll,double pitch,double 
 	X_.setZero(STATE_SIZE_);
 	P_.setZero(STATE_SIZE_, STATE_SIZE_);
 	P_ = INIT_SIGMA_*Eigen::MatrixXd::Identity(STATE_SIZE_, STATE_SIZE_);
-	set_pose(x,y,z,roll,pitch,yaw);
+	set_pose(x, y, z, roll, pitch, yaw);
 }
-void EKF::set_pose(double x,double y,double z,double roll,double pitch,double yaw)
+
+void EKF::set_pose(double x, double y, double z, double roll, double pitch, double yaw)
 {
 	if(is_3DoF_){
 		if(X_.size() != STATE_SIZE_){
@@ -124,158 +130,165 @@ void EKF::set_pose(double x,double y,double z,double roll,double pitch,double ya
 void EKF::ndt_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
 	ndt_pose_ = *msg;
+	has_received_ndt_pose_ = true;
 	measurement_update();
-	// has_received_ndt_pose_ = true;
 }
 
 void EKF::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
 	odom_ = *msg;
+	has_received_odom_ = true;
 	time_publish_ = msg->header.stamp;
 	now_time_odom_ = msg->header.stamp;
-	double dt;
 	try{
 		rclcpp::Duration duration = now_time_odom_ - last_time_odom_;
-		dt = duration.seconds();
+		dt_ = duration.seconds();
 	}catch(std::runtime_error& ex) {
 		RCLCPP_ERROR(this->get_logger(), "Exception: [%s]", ex.what());
-
 	}
-	// if(is_odom_tf_){
-	// 	geometry_msgs::msg::TransformStamped transform;
-	// 	transform.header = msg->header;
-	// 	transform.header.frame_id = odom_frame_id_;
-    // 	transform.child_frame_id = base_link_frame_id_;
-
-    // 	transform.transform.translation.x = msg->pose.pose.position.x;
-    // 	transform.transform.translation.y = msg->pose.pose.position.y;
-    // 	transform.transform.translation.z = msg->pose.pose.position.z;
-    // 	transform.transform.rotation = msg->pose.pose.orientation;
-
-	// 	broadcaster_->sendTransform(transform);
-	// }
-	// has_received_odom_ = true;
 	if(is_first_odom_){
-		dt = 0.0;
-	}else{
+		dt_ = 0.0;
+		is_first_odom_ = false;
+	}
+	else{
 		std::cout << "odom motioin_update" << std::endl;
-		motion_update(true, dt);
+		motion_update_by_odom(dt_);
 		publish_ekf_pose();
 	}
 	last_time_odom_ = now_time_odom_;
-	is_first_odom_ = false;
+}
+
+void EKF::motion_update_by_odom(double dt)
+{
+    // Odomからの並進速度計算
+    auto current_position = odom_.pose.pose.position;
+    double current_v = 0.0;
+	double  dyaw = 0.0;
+	// double omega = 0.0;
+    
+    Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
+	// 現在の姿勢角を取得
+    // double current_yaw = calc_yaw_from_quat(odom_.pose.pose.orientation);
+    
+    if (!first_callback_) {
+        // 位置の変化量から速度を計算
+        current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
+		// 姿勢角の変化量から角速度を計算
+        // dyaw = normalize_angle(current_yaw - last_odom_yaw_);
+        // omega = dyaw / dt;
+    }
+    
+    // 現在の位置を保存
+    last_position_ = current_position;
+    first_callback_ = false;
+    last_odom_pose_ = current_odom_pose_;
+	// last_odom_yaw_ = current_yaw;
+    
+    // 制御入力
+    double nu = current_v;
+	// double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
+    double omega = odom_.twist.twist.angular.z; // Odomから角速度を取得
+    
+    // 微小角速度の場合は数値安定性のため小さな値に設定
+    if(std::fabs(omega) < 1e-3) omega = 1e-10;
+    
+    // Motion noise covariance matrix M (2x2)
+    Eigen::MatrixXd M(2, 2);
+    M.setZero();
+    M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+    M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
+    
+    // Jacobian of motion model w.r.t. control inputs A (3x2)
+    Eigen::Matrix<double,3,2> A;
+    A.setZero();
+    A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
+    A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
+    A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
+    A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
+    A(2,0) = 0.0;
+    A(2,1) = dt;
+    
+    // Jacobian of motion model w.r.t. state G (3x3)
+    Eigen::MatrixXd G(3, 3);
+    G.setIdentity();
+    G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
+    G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+    
+    // State transition
+    if(std::fabs(omega) < 1e-2){
+        // 角速度が小さい場合は線形近似を使用
+        X_(0) += nu*std::cos(X_(2))*dt;
+        X_(1) += nu*std::sin(X_(2))*dt;
+        X_(2) += omega*dt;
+    }
+    else{
+        // 通常の非線形モデル
+        X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+        X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
+        X_(2) += omega*dt;
+    }
+    
+    // Covariance update
+    P_ = G * P_ * G.transpose() + A * M * A.transpose();
 }
 
 void EKF::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
 	imu_ = *msg;
-	// has_received_imu_ = true;
+	has_received_imu_ = true;
 	time_publish_ = msg->header.stamp;
 	now_time_imu_ = msg->header.stamp;
-	double dt;
 	try{
 		rclcpp::Duration duration = now_time_imu_ - last_time_imu_;
-		dt = duration.seconds();
+		dt_ = duration.seconds();
 	}catch(std::runtime_error& ex) {
 		// ROS_ERROR("Exception: [%s]", ex.what());
 		RCLCPP_ERROR(this->get_logger(), "Exception: [%s]", ex.what());
-
 	}
 	if(is_first_imu_){
-		dt = 0.0;
-	}else{
+		dt_ = 0.0;
+		is_first_imu_ = false;
+	}
+	else{
 		std::cout << "imu motioin_update" << std::endl;
-		motion_update(false, dt);
+		motion_update_by_imu(dt_);
 		publish_ekf_pose();
 	}
 	last_time_imu_ = now_time_imu_;
-	is_first_imu_ = false;
 }
-
-void EKF::motion_update(bool is_odom, double dt)
+void EKF::motion_update_by_imu(double dt)
 {
-	if(is_3DoF_) motion_update_3DoF(is_odom, dt);
-	// else motion_update_6DoF(dt);
-}
-
-void EKF::motion_update_3DoF(bool is_odom, double dt)
-{
-	// twist情報の作成
-	auto current_position = odom_.pose.pose.position;
-	auto current_time = this->get_clock()->now();
-	geometry_msgs::msg::Twist twist_;
-	double current_v;
-
-	Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
-
-	if (!first_callback_) {
-		// 位置の変化量を計算
-		double dx = current_position.x - last_position_.x;
-		double dy = current_position.y - last_position_.y;
-		double dz = current_position.z - last_position_.z;
-		current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
-	}
-	// 現在の位置と時刻を保存
-	last_position_ = current_position;
-	first_callback_ = false;
-	last_odom_pose_ = current_odom_pose_;
-	
-	double nu = current_v;
-	// double nu = twist_.linear.x;
-	// double nu = odom_.twist.twist.linear.x;
-
-	double omega = imu_.angular_velocity.z; // ここは大丈夫そう odomに切り替えてもバックしたので
-	// double omega = odom_.twist.twist.angular.z;
-	// double omega = get_yaw(odom_.pose.pose.orientation);
-
-	if(std::fabs(omega) < 1e-3) omega = 1e-10;
-
-	// M
-	Eigen::MatrixXd M(X_.size() - 1,X_.size() - 1);
-	M.setZero();
-	M(0,0) = SIGMA_ODOM_*SIGMA_ODOM_;
-	M(1,1) = SIGMA_IMU_*SIGMA_IMU_;
-	//M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
-	//M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
-
-	// A
-	Eigen::Matrix<double,3,2> A;
-	A.setZero();
-	A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
-	A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
-	A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
-	A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
-	A(2,0) = 0.0;
-	A(2,1) = dt;
-
-	// G
-	Eigen::MatrixXd G(X_.size(),X_.size());
-	G.setIdentity();
-	G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
-	G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
-
-	// state transition
-	if(std::fabs(omega) < 1e-2){
-		X_(0) += nu*std::cos(X_(2))*dt;
-		X_(1) += nu*std::sin(X_(2))*dt;
-		X_(2) += omega*dt;
-	}
-	else{
-		X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
-		X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
-		X_(2) += omega*dt;
-	}
-	
-	/*
-	X_(0) += nu*std::cos(X_(2))*dt;
-	X_(1) += nu*std::sin(X_(2))*dt;
-	X_(2) += omega*dt;
-	*/
-
-	P_ = G*P_*G.transpose() + A*M*A.transpose();
-
-	has_received_imu_ = false;
-	has_received_odom_ = false;
+    // IMUからの角速度を取得
+    double omega = imu_.angular_velocity.z;
+    
+    // 微小角速度の場合は数値安定性のため小さな値に設定
+    if(std::fabs(omega) < 1e-3) omega = 1e-10;
+    
+    // 並進速度は0と仮定（IMUからは取得できないため）
+    double nu = 0.0;
+    
+    // Motion noise covariance matrix M (2x2)
+    Eigen::MatrixXd M(2, 2);
+    M.setZero();
+    M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+    M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
+    
+    // Jacobian of motion model w.r.t. control inputs A (3x2)
+    Eigen::Matrix<double,3,2> A;
+    A.setZero();
+    // IMUは角速度のみなので、角速度に関する項のみ設定
+    A(2,1) = dt; // dyaw/domega = dt
+    
+    // Jacobian of motion model w.r.t. state G (3x3)
+    Eigen::MatrixXd G(3, 3);
+    G.setIdentity();
+    // IMUは並進速度がないため、yawに関するJacobianは0
+    
+    // State transition (IMUは角度のみ更新)
+    X_(2) += omega * dt;
+    
+    // Covariance update
+    P_ = G * P_ * G.transpose() + A * M * A.transpose();
 }
 
 void EKF::measurement_update()
@@ -328,6 +341,14 @@ void EKF::measurement_update_3DoF()
 bool EKF::check_mahalanobis_distance(geometry_msgs::msg::PoseStamped ekf_pose, geometry_msgs::msg::PoseStamped ndt_pose)
 {
 	std::cout << "CHECK distance" << std::endl;
+
+	// 共分散行列が逆行列可能かチェック
+	double det = P_.determinant();
+	if (std::abs(det) < 1e-12) {
+		std::cout << "Covariance matrix is singular, accepting measurement" << std::endl;
+		return true; // 共分散が特異の場合は測定値を受け入れ
+	}
+
 	Eigen::VectorXd ndt_eigen = Eigen::VectorXd::Zero(3);
 	Eigen::VectorXd ekf_eigen = Eigen::VectorXd::Zero(3);
   	const double ndt_yaw = tf2::getYaw(ndt_pose.pose.orientation);
@@ -337,21 +358,54 @@ bool EKF::check_mahalanobis_distance(geometry_msgs::msg::PoseStamped ekf_pose, g
   	// ekf_eigen << ekf_pose.pose.position.x, ekf_pose.pose.position.y, ekf_yaw;
   	ekf_eigen << X_(0), X_(1), X_(2);
 
-	// ekf_poseとndt_poseのマハラノビス距離を算出
-  	double mahalanobis_distance =std::sqrt((ndt_eigen - ekf_eigen).transpose() * P_.inverse() * (ndt_eigen - ekf_eigen));
-	std::cout << "done calc mahalanobis distance!" << std::endl;
-	// 閾値を超えていなかったらmeasurement_updateする
-	if(mahalanobis_distance <= th_mahalanobis_){
-		std::cout << "short distance!" << std::endl;
-		return true;
+	Eigen::VectorXd diff = ndt_eigen - ekf_eigen;
+	diff(2) = normalize_angle(diff(2)); // ヨー角差分を-π〜πに正規化
+	std::cout << "✓ Normalized angle difference: " << diff(2) << " rad" << std::endl;
+
+	try {
+		// 数値安定性のために疑似逆行列を使用
+		Eigen::MatrixXd P_inv = P_.completeOrthogonalDecomposition().pseudoInverse();
+		double mahalanobis_distance = std::sqrt(diff.transpose() * P_inv * diff);
+		
+		std::cout << "Mahalanobis distance calculated: " << mahalanobis_distance << std::endl;
+		std::cout << "Threshold: " << th_mahalanobis_ << std::endl;
+		
+		// 閾値を超えていなかったらmeasurement_updateする
+		if(mahalanobis_distance <= th_mahalanobis_){
+			std::cout << "Short distance! Accepting measurement" << std::endl;
+			return true;
+		}
+		std::cout << "Large distance! Rejecting measurement" << std::endl;
+		return false;
 	}
-	std::cout << "large distance! reject" << std::endl;
+	catch(const std::exception& e) {
+		std::cout << " Exception in Mahalanobis calculation: " << e.what() << std::endl;
+		std::cout << " Accepting measurement due to calculation error" << std::endl;
+		return true; // 計算失敗時は測定値を受け入れ
+	}
+
+	// // ekf_poseとndt_poseのマハラノビス距離を算出
+  	// double mahalanobis_distance =std::sqrt((ndt_eigen - ekf_eigen).transpose() * P_.inverse() * (ndt_eigen - ekf_eigen));
+	// std::cout << "done calc mahalanobis distance!" << std::endl;
+	// // 閾値を超えていなかったらmeasurement_updateする
+	// if(mahalanobis_distance <= th_mahalanobis_){
+	// 	std::cout << "short distance!" << std::endl;
+	// 	return true;
+	// }
+	// std::cout << "large distance! reject" << std::endl;
 	return false;
 }
 
 bool EKF::check_ekf_covariance(geometry_msgs::msg::PoseStamped ekf_pose)
 {
 	std::cout << "CHECK covariance" << std::endl;
+
+	if(P_.rows() < 3 || P_.cols() < 3) {
+		std::cout << " Invalid covariance matrix dimensions: " << P_.rows() << "x" << P_.cols() << std::endl;
+		return true; // 行列が無効の場合は強制更新
+	}
+	std::cout << "Covariance matrix dimensions: " << P_.rows() << "x" << P_.cols() << std::endl;
+
 	// ekf_poseの分散が大きければ強制measuremeent_update
 	const double variance_x    = P_(0, 0);
 	const double covariance_xy = P_(0, 1);
@@ -448,7 +502,10 @@ Eigen::VectorXd EKF::measurement_function(Eigen::VectorXd x,Eigen::MatrixXd h)
 	return h*x;
 }
 
-double EKF::normalize_angle(double angle) { return std::atan2(std::sin(angle),std::cos(angle)); }
+double EKF::normalize_angle(double angle) 
+{
+	 return std::atan2(std::sin(angle),std::cos(angle)); 
+}
 
 double EKF::calc_yaw_from_quat(geometry_msgs::msg::Quaternion q)
 {
@@ -460,24 +517,21 @@ double EKF::calc_yaw_from_quat(geometry_msgs::msg::Quaternion q)
 
 void EKF::process()
 {
-	// std::cout << "received_imu:  " << has_received_imu_ << std::endl;
-	// std::cout << "received_odom: " << has_received_odom_ << std::endl;
-	// if(has_received_imu_ && has_received_odom_){
-		// now_time_ = ros::Time::now();
-		// if(is_first_){
-		// 	dt = 1.0/(double)10;
-		// 	is_first_ = false;
-		// }
-		// else dt = now_time_.toSec() - last_time_.toSec();
-		// motion_update(1.0/(double)10);
-		// if(has_received_ndt_pose_) measurement_update();
-		//if(has_received_ndt_pose_ && !is_measurement_.data) measurement_update();
-		// publish_ekf_pose();
-		// publish_tf();
-		// has_received_ndt_pose_ = false;
+	// if(!is_first_imu_ && !is_first_odom_){
+	// 	if(has_received_imu_ && has_received_odom_){
+	// 		motion_update(dt_);
+	// 		has_received_imu_ = false;
+	// 		has_received_odom_ = false;
+	// 		publish_ekf_pose();
+	// 	}
+	// 	if(has_received_ndt_pose_){
+	// 		measurement_update();
+	// 		has_received_ndt_pose_ = false;
+	// 		publish_ekf_pose();
+	// 	} 
 	// }
 }
-// publish_tf()は一旦放置
+
 int main(int argc,char** argv)
 {
 	std::cout << "---ekf---" << std::endl;
@@ -485,168 +539,101 @@ int main(int argc,char** argv)
     auto node = std::make_shared<EKF>();
 	// now_time_ = ros::Time::now();
 	// bool is_first_ = true;
-	rclcpp::Rate rate(10);
+	// rclcpp::Rate rate(10);
 	while(rclcpp::ok()){
 		// node->process();
 		// last_time_ = now_time_;
 		rclcpp::spin_some(node);
-		rate.sleep();
+		// rate.sleep();
 	}
 	return 0;
 }
 
-// void EKF::measurement_update_6DoF()
-// {
-// 	std::cout << "measurement" << std::endl;
+void EKF::motion_update(double dt)
+{
+	if(is_3DoF_) motion_update_3DoF(dt);
+	// else motion_update_6DoF(dt);
+}
+// dtの行方
+// motion_update時のタイムスタンプあっていない可能性
+// 並進速度の算出が位置差分のためノイズがありそ
+void EKF::motion_update_3DoF(double dt)
+{
+	// twist情報の作成
+	auto current_position = odom_.pose.pose.position;
+	auto current_time = this->get_clock()->now();
+	geometry_msgs::msg::Twist twist_;
+	double current_v;
 
-// 	// Z
-// 	Eigen::VectorXd Z(X_.size());
-// 	Z(0) = ndt_pose_.pose.position.x;
-// 	Z(1) = ndt_pose_.pose.position.y;
-// 	Z(2) = ndt_pose_.pose.position.z;
-// 	calc_rpy_from_quat(ndt_pose_.pose.orientation,Z(3),Z(4),Z(5));
+	Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
 
-// 	// H
-// 	Eigen::MatrixXd H = Eigen::MatrixXd::Identity(X_.size(),X_.size());
+	if (!first_callback_) {
+		// 位置の変化量を計算
+		double dx = current_position.x - last_position_.x;
+		double dy = current_position.y - last_position_.y;
+		double dz = current_position.z - last_position_.z;
+		current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
+	}
+	// 現在の位置と時刻を保存
+	last_position_ = current_position;
+	first_callback_ = false;
+	last_odom_pose_ = current_odom_pose_;
+	
+	// ※要改善箇所
+	double nu = current_v;
+	// double nu = twist_.linear.x;
+	// double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
 
-// 	// I
-// 	Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(),X_.size());
+	double omega = imu_.angular_velocity.z; // ここは大丈夫そう odomに切り替えてもバックしたので
+	// double omega = odom_.twist.twist.angular.z;
+	// double omega = get_yaw(odom_.pose.pose.orientation);
 
-// 	// Y
-// 	Eigen::VectorXd Y = Z - measurement_function(X_,H);
+	if(std::fabs(omega) < 1e-3) omega = 1e-10;
 
-// 	// R
-// 	Eigen::MatrixXd R = SIGMA_NDT_*Eigen::MatrixXd::Identity(X_.size(),X_.size());
+	// M
+	Eigen::MatrixXd M(X_.size() - 1,X_.size() - 1);
+	M.setZero();
+	// M(0,0) = SIGMA_ODOM_*SIGMA_ODOM_;
+	// M(1,1) = SIGMA_IMU_*SIGMA_IMU_;
+	M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+	M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
 
-// 	// S
-// 	Eigen::MatrixXd S = H*P_*H.transpose() + R;
+	// A
+	Eigen::Matrix<double,3,2> A;
+	A.setZero();
+	A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
+	A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
+	A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
+	A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
+	A(2,0) = 0.0;
+	A(2,1) = dt;
 
-// 	// K
-// 	Eigen::MatrixXd K = P_*H.transpose()*S.inverse();
+	// G
+	Eigen::MatrixXd G(X_.size(),X_.size());
+	G.setIdentity();
+	G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
+	G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
 
-// 	X_ += K*Y;
-// 	P_ = (I - K*H)*P_;
+	// state transition
+	if(std::fabs(omega) < 1e-2){
+		X_(0) += nu*std::cos(X_(2))*dt;
+		X_(1) += nu*std::sin(X_(2))*dt;
+		X_(2) += omega*dt;
+	}
+	else{
+		X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+		X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
+		X_(2) += omega*dt;
+	}
+	
+	/*
+	X_(0) += nu*std::cos(X_(2))*dt;
+	X_(1) += nu*std::sin(X_(2))*dt;
+	X_(2) += omega*dt;
+	*/
 
-// 	for(int i = 3; i < 6; i++) X_(i) = normalize_angle(X_(i));
-// }
+	P_ = G*P_*G.transpose() + A*M*A.transpose();
 
-// void EKF::motion_update_6DoF(double dt)
-// {
-// 	double roll = X_(3) ;
-// 	double pitch = X_(4);
-// 	double yaw = X_(5) ;
-
-// 	double delta_yaw = imu_.angular_velocity.z*dt;
-// 	double delta_roll = imu_.angular_velocity.x*dt;
-// 	double delta_pitch = imu_.angular_velocity.y*dt;
-
-// 	if(delta_yaw < 1e-3) delta_yaw = 0.0;
-// 	if(delta_roll < 1e-3) delta_roll = 0.0;
-// 	if(delta_pitch < 1e-3) delta_pitch = 0.0;
-
-// 	Eigen::Vector3d delta_position = { odom_.twist.twist.linear.x*dt, 0.0, 0.0 };
-// 	Eigen::Vector3d delta_rotation = { delta_roll, delta_pitch, delta_yaw };
-// 	Eigen::Matrix3d rotation_rpy;
-// 	rotation_rpy << 1, std::sin(roll)*std::tan(pitch), std::cos(roll)*std::tan(pitch),
-// 	                0, std::cos(roll)                , -std::sin(roll)               ,
-// 					0, std::sin(roll)/std::cos(pitch), std::cos(roll)/std::cos(pitch);
-
-// 	Eigen::VectorXd F(X_.size());
-// 	F.segment(0,3) = X_.segment(0,3) + calc_rotation_matrix(X_.segment(3,3))*delta_position;
-// 	F.segment(3,3) = X_.segment(3,3) + rotation_rpy*delta_rotation;
-// 	for(int i = 3; i < 6; i++) F(i) = normalize_angle(F(i));
-
-// 	Eigen::MatrixXd G(X_.size(),X_.size());
-// 	G.block(0,0,3,3) = Eigen::Matrix3d::Identity();
-// 	G.block(3,3,3,3) = Eigen::Matrix3d::Identity();
-// 	G.block(3,0,3,3) = Eigen::Matrix3d::Zero();
-// 	G.block(0,3,3,3) = Eigen::Matrix3d::Zero();
-
-// 	G(3,3) = 1.0 + std::cos(roll)*std::tan(pitch)*delta_pitch - std::sin(roll)*std::tan(pitch)*delta_yaw;
-// 	G(3,4) = std::sin(roll)/std::cos(pitch)/std::cos(pitch)*delta_pitch + std::cos(roll)/std::cos(pitch)/std::cos(pitch)*delta_yaw;
-// 	G(3,5) = 0.0;
-// 	G(4,3) = -std::sin(roll)*delta_pitch - std::cos(roll)*delta_yaw;
-// 	G(4,4) = 1.0;
-// 	G(4,5) = 0.0;
-// 	G(5,3) = std::cos(roll)/std::cos(pitch)*delta_pitch - std::sin(roll)/std::cos(pitch)*delta_yaw;
-// 	G(5,4) = std::sin(roll)*std::sin(pitch)/std::cos(pitch)/std::cos(pitch)*delta_pitch + std::cos(roll)*std::sin(pitch)/std::cos(pitch)/std::cos(pitch)*delta_yaw;
-// 	G(5,5) = 1.0;
-// 	G(0,3) = delta_position(1)*(std::cos(roll)*std::sin(pitch)*std::cos(yaw) + std::sin(roll)*std::sin(yaw)) + delta_position(2)*(-std::sin(roll)*std::sin(pitch)*std::cos(yaw) + std::cos(roll)*std::sin(yaw));
-// 	G(0,4) = delta_position(0)*(-std::sin(pitch)*std::cos(yaw)) + delta_position(1)*(std::sin(roll)*std::cos(pitch)*std::cos(yaw)) + delta_position(2)*(std::cos(roll)*std::cos(pitch)*std::cos(yaw));
-// 	G(0,5) = delta_position(0)*(-std::cos(pitch)*std::sin(yaw)) + delta_position(1)*(-std::sin(roll)*std::sin(pitch)*std::sin(yaw) - std::cos(roll)*std::cos(yaw)) + delta_position(2)*(-std::cos(roll)*std::sin(pitch)*std::sin(yaw) + std::sin(roll)*std::cos(yaw));
-// 	G(1,3) = delta_position(1)*(std::cos(roll)*std::sin(pitch)*std::sin(yaw ) - std::sin(roll)*std::cos(yaw)) + delta_position(2)*(-std::sin(roll)*std::sin(pitch)*std::sin(yaw) - std::cos(roll)*std::cos(yaw));
-// 	G(1,4) = delta_position(0)*(-std::sin(pitch)*std::sin(yaw)) + delta_position(1)*(std::sin(roll)*std::cos(pitch)*std::sin(yaw)) + delta_position(2)*(std::cos(roll)*std::cos(pitch)*std::sin(yaw));
-// 	G(1,5) = delta_position(0)*(std::cos(pitch)*std::cos(yaw)) + delta_position(1)*(std::sin(roll)*std::sin(pitch)*std::cos(yaw) - std::cos(roll)*std::sin(yaw)) + delta_position(2)*(std::cos(roll)*std::sin(pitch)*std::cos(yaw) + std::sin(roll)*std::sin(yaw));
-// 	G(2,3) = delta_position(1)*(std::cos(roll)*std::cos(pitch)) + delta_position(2)*(-std::sin(roll)*std::cos(pitch));
-// 	G(2,4) = delta_position(0)*(-std::cos(pitch)) + delta_position(1)*(-std::sin(roll)*std::sin(pitch)) + delta_position(2)*(-std::cos(roll)*std::sin(pitch)) ;
-// 	G(2,5) = 0.0;
-
-// 	Eigen::MatrixXd Q(X_.size(),X_.size());
-// 	Q.setZero();
-// 	Q.block(0,0,3,3) = SIGMA_ODOM_*Eigen::Matrix3d::Identity();
-// 	Q.block(3,3,3,3) = SIGMA_IMU_*Eigen::Matrix3d::Identity();
-
-// 	X_ = F;
-// 	P_ = G*P_*G.transpose() + Q;
-// }
-
-// void EKF::respawn()
-// {
-// 	ekf_pose_.pose.position.x = respawn_pose_.pose.position.x;
-// 	ekf_pose_.pose.position.y = respawn_pose_.pose.position.y;
-// 	ekf_pose_.pose.position.z = ndt_pose_.pose.position.z;
-// 	ekf_pose_.pose.orientation = ndt_pose_.pose.orientation;
-// 	ekf_pose_.header.frame_id = map_frame_id_;
-// 	X_(0) = respawn_pose_.pose.position.x;
-// 	X_(1) = respawn_pose_.pose.position.y;
-// 	// ekf_pose_pub_.publish(ekf_pose_);
-// 	ekf_pose_pub_->publish(ekf_pose_);
-// }
-
-// void EKF::publish_tf()
-// {
-// 	try{
-// 		tf2::Quaternion q;
-// 		tf2::Transform map_transform;
-// 		if(is_3DoF_){
-// 			q.setRPY(0.0,0.0,X_(2));
-// 			//tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),0.0));
-// 			tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),ndt_pose_.pose.position.z));
-// 			map_transform = transform;
-// 		}
-// 		else{
-// 			q.setRPY(X_(3),X_(4),X_(5));
-// 			tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),X_(2)));
-// 			map_transform = transform;
-// 		}
-// 		geometry_msgs::msg::PoseStamped tf_stamped;
-// 		tf_stamped.header.frame_id = base_link_frame_id_;
-// 		tf_stamped.header.stamp = odom_.header.stamp;
-// 		tf2::toMsg(map_transform.inverse(),tf_stamped.pose);
-// 		geometry_msgs::msg::PoseStamped odom_to_map;
-// 		buffer_->transform(tf_stamped,odom_to_map,odom_frame_id_);
-
-// 		tf2::Transform latest_tf;
-// 		tf2::convert(odom_to_map.pose,latest_tf);
-// 		geometry_msgs::msg::TransformStamped tmp_tf_stamped;
-// 		// geometry_msgs::TransformStamped tmp_tf_stamped;
-// 		tmp_tf_stamped.header.stamp = odom_.header.stamp;
-// 		tmp_tf_stamped.header.frame_id = map_frame_id_;
-// 		tmp_tf_stamped.child_frame_id = odom_frame_id_;
-// 		tf2::convert(latest_tf.inverse(),tmp_tf_stamped.transform);
-// 		broadcaster_->sendTransform(tmp_tf_stamped);
-// 	}
-// 	catch(tf2::TransformException& ex){
-// 		// ROS_WARN("%s", ex.what());
-// 		return;
-// 	}
-
-// }
-
-// double EKF::get_yaw(geometry_msgs::msg::Quaternion q)
-// {
-//     double roll , pitch , yaw;
-//     tf::Quaternion quat(q.x, q.y, q.z, q.w);
-//     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
-//     return yaw;
-// }
+	// has_received_imu_ = false;
+	// has_received_odom_ = false;
+}

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(ekf_localizer)
 
 # add_compile_options(-std=c++14 -Wall)
+# add_compile_options(-O2)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -24,6 +25,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED)
 find_package(ndt_omp REQUIRED)
 # find_package(pclomp REQUIRED)
+find_package(std_srvs REQUIRED)
 
 ament_auto_find_build_dependencies()
 
@@ -190,3 +192,49 @@ DESTINATION lib/${PROJECT_NAME})
 # install(DIRECTORY launch 
 #   DESTINATION share/${PROJECT_NAME}/
 # )
+
+
+add_executable(pcd_renamer src/pcd_rename.cpp)
+
+ament_target_dependencies(pcd_renamer
+  rclcpp
+  sensor_msgs
+)
+
+install(TARGETS
+  pcd_renamer
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(draw_moving_trajectory_node src/draw_moving_trajectory.cpp)
+
+# Specify libraries to link a library or executable target against
+ament_target_dependencies(draw_moving_trajectory_node
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  std_msgs
+  visualization_msgs
+  std_srvs
+)
+
+# Install executables
+install(TARGETS
+  draw_moving_trajectory_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install launch files
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install config files
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
