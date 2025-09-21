@@ -17,7 +17,7 @@ colcon build
 
 ## How to use
 ```
-# Download map data to pcd folder.
+# Download the map data into the "pcd" folder and update the map data path in the launch file.
 
 # run
 ros2 launch ekf_localizer ekf_locali.launch.py
