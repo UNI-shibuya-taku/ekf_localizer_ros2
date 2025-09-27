@@ -14,17 +14,16 @@ def generate_launch_description():
         'config',  # ディレクトリ名
         'ekf',  # サブディレクトリ
         # 'ekf.yaml'  # ファイル名
-        'ekf_siminkaikan.yaml'  # ファイル名
+        'ekf.yaml'  # ファイル名
     )
     params_map_matcher = os.path.join(
         get_package_share_directory('ekf_localizer'),  # パッケージ名
         'config',  # ディレクトリ名
         'map_matcher',  # サブディレクトリ
         # 'map_matcher.yaml'  # ファイル名
-        'map_matcher_siminkaikan.yaml'  # ファイル名
+        'map_matcher.yaml'  # ファイル名
     )
     pcd_params = {
-        "file_name": "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_siminkaikan.pcd",
         "frame_id": "map",
         "publish_rate": 0.5
     }
