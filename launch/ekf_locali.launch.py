@@ -13,14 +13,12 @@ def generate_launch_description():
         get_package_share_directory('ekf_localizer'),  # パッケージ名
         'config',  # ディレクトリ名
         'ekf',  # サブディレクトリ
-        # 'ekf.yaml'  # ファイル名
         'ekf.yaml'  # ファイル名
     )
     params_map_matcher = os.path.join(
         get_package_share_directory('ekf_localizer'),  # パッケージ名
         'config',  # ディレクトリ名
         'map_matcher',  # サブディレクトリ
-        # 'map_matcher.yaml'  # ファイル名
         'map_matcher.yaml'  # ファイル名
     )
     pcd_params = {
@@ -40,8 +38,8 @@ def generate_launch_description():
             executable='ekf_localizer_node',
             name='ekf_localizer_node',
             parameters=[params_ekf],
-            # remappings=[('/ekf_pose', '/test/ekf_pose'),
-            #                     ('/ndt_pose', '/test/ndt_pose')],
+            remappings=[('/bno055/imu', '/imu/data'),
+                                ],
             # output='screen',  # 標準出力を表示するように設定
         ),
         

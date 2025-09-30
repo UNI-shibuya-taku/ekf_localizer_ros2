@@ -194,35 +194,35 @@ DESTINATION lib/${PROJECT_NAME})
 # )
 
 
-add_executable(pcd_renamer src/pcd_rename.cpp)
+# add_executable(pcd_renamer src/pcd_rename.cpp)
 
-ament_target_dependencies(pcd_renamer
-  rclcpp
-  sensor_msgs
-)
+# ament_target_dependencies(pcd_renamer
+#   rclcpp
+#   sensor_msgs
+# )
 
-install(TARGETS
-  pcd_renamer
-  DESTINATION lib/${PROJECT_NAME}
-)
+# install(TARGETS
+#   pcd_renamer
+#   DESTINATION lib/${PROJECT_NAME}
+# )
 
-add_executable(draw_moving_trajectory_node src/draw_moving_trajectory.cpp)
+# add_executable(draw_moving_trajectory_node src/draw_moving_trajectory.cpp)
 
-# Specify libraries to link a library or executable target against
-ament_target_dependencies(draw_moving_trajectory_node
-  rclcpp
-  geometry_msgs
-  nav_msgs
-  std_msgs
-  visualization_msgs
-  std_srvs
-)
+# # Specify libraries to link a library or executable target against
+# ament_target_dependencies(draw_moving_trajectory_node
+#   rclcpp
+#   geometry_msgs
+#   nav_msgs
+#   std_msgs
+#   visualization_msgs
+#   std_srvs
+# )
 
-# Install executables
-install(TARGETS
-  draw_moving_trajectory_node
-  DESTINATION lib/${PROJECT_NAME}
-)
+# # Install executables
+# install(TARGETS
+#   draw_moving_trajectory_node
+#   DESTINATION lib/${PROJECT_NAME}
+# )
 
 # Install launch files
 install(DIRECTORY launch
