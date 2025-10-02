@@ -51,6 +51,13 @@ def generate_launch_description():
             parameters=[params_map_matcher],
             # output='screen',  # 標準出力を表示
         ),
+        # wheel_odometryノード
+        Node(
+            package='wheel_odometry',
+            executable='wheel_odometry_node',
+            name='wheel_odometry_node',
+            # output='screen'
+        ),
 
         # ノード3: TF Cub
         Node(
@@ -59,7 +66,22 @@ def generate_launch_description():
             name='tf_cub_node',
             # output='screen',  # 標準出力を表示
         ),
-        # ↓なぜか/base_link座標系に出力されてしまい
+        Node(
+            package='ekf_localizer',
+            executable='gps_updater_node',
+            name='gps_updater',
+            parameters=[{
+                'gps_topic_name': '/fix',
+                'gps_pose_topic_name': '/gps_pose',
+                'map_frame_id': 'map',
+                'use_manual_origin': False,
+                'min_satellites': 6.0,
+                'max_hdop': 3.0,
+                'max_covariance_threshold': 10.0
+            }],
+            output='screen',
+        ),
+
         # Node(
         #     package='pcl_ros',
         #     executable='pcd_to_pointcloud',

@@ -26,6 +26,7 @@ private:
 	void ndt_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
 	void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr msg);
 	void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
+	void gps_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg);
 	
 	// void measurement_callback(const std_msgs::msg::Bool::ConstSharedPtr msg);
 
@@ -50,11 +51,13 @@ private:
 	geometry_msgs::msg::Quaternion rpy_to_msg(double roll,double pitch,double yaw);
 	Eigen::Matrix3d calc_rotation_matrix(Eigen::Vector3d euler_angle);
 	Eigen::VectorXd measurement_function(Eigen::VectorXd x,Eigen::MatrixXd h);
+	void measurement_update_gps();
 	bool check_mahalanobis_distance(geometry_msgs::msg::PoseStamped ekf_pose, geometry_msgs::msg::PoseStamped ndt_pose);
 	bool check_ekf_covariance(geometry_msgs::msg::PoseStamped ekf_pose);
 
 	// double get_yaw(geometry_msgs::msg::Quaternion q);
 
+	rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr gps_pose_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr ndt_pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -82,6 +85,8 @@ private:
 	std_msgs::msg::Bool is_measurement_;
 	nav_msgs::msg::Path ekf_pose_trajectry;
 	std::vector<geometry_msgs::msg::PoseStamped> poses_;
+	geometry_msgs::msg::PoseWithCovarianceStamped gps_pose_;
+
 
 	std::string ndt_pose_topic_name_;
 	std::string imu_topic_name_;
@@ -90,18 +95,21 @@ private:
 	std::string map_frame_id_;
 	std::string odom_frame_id_;
 	std::string base_link_frame_id_;
+	std::string gps_pose_topic_name_;
 
 	std::string measurement_topic_name_;
 
 	bool has_received_odom_;
 	bool has_received_imu_;
 	bool has_received_ndt_pose_;
+	bool has_received_gps_;
 	// bool is_first_;
 	bool is_odom_tf_;
 	bool is_3DoF_;
 
 	bool is_first_odom_ = true;
 	bool is_first_imu_ = true;
+	bool gps_measurement_enable_ = false;
 
 	double INIT_X_;
 	double INIT_Y_;
@@ -123,6 +131,7 @@ private:
 	double th_pose_covariance_;
 	double th_direction_covariance_;
 	double dt_;
+	double SIGMA_GPS_;
 
 	int STATE_SIZE_;
 	Eigen::VectorXd X_;

@@ -68,10 +68,12 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
     ndt_pc_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         ndt_pc_topic_name_, rclcpp::QoS(1).reliable());
 
+	// tfBuffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    // tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_);
 	tfBuffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-    tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_);
+	tfListener_ = std::make_shared<tf2_ros::TransformListener>(*tfBuffer_, this, false);  // 第3引数をfalseに
 
-	std::cout << "MATCHING_SCORE_TH_: " << MATCHING_SCORE_TH_ << std::endl;
+	// std::cout << "MATCHING_SCORE_TH_: " << MATCHING_SCORE_TH_ << std::endl;
 	map_pcl_ = std::make_shared<PointCloudType>();
 	current_pcl_ = std::make_shared<PointCloudType>();
 }
@@ -195,31 +197,31 @@ void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::Poin
 
 	std::cout << "FitnessScore: " << ndt.getFitnessScore() << std::endl;
 	// if(ndt.getFitnessScore() <= MATCHING_SCORE_TH_){
-		Eigen::Matrix4f translation = ndt.getFinalTransformation();	
-		if(translation.isZero(1e-6))
-		{
-			return;
-		}
-		Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
-		quaternion.normalize();
+	Eigen::Matrix4f translation = ndt.getFinalTransformation();	
+	if(translation.isZero(1e-6))
+	{
+		return;
+	}
+	Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
+	quaternion.normalize();
 
-		// publish_ndt_pose
-		geometry_msgs::msg::PoseStamped ndt_pose;
-		ndt_pose.pose.position.x = translation(0,3);
-		ndt_pose.pose.position.y = translation(1,3);
-		ndt_pose.pose.position.z = translation(2,3);
-		//ndt_pose.pose.position.z = 0.0;
-		ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
-		ndt_pose.header.stamp = ekf_pose_.header.stamp;
-		ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
-		ndt_pose_pub_->publish(ndt_pose);
+	// publish_ndt_pose
+	geometry_msgs::msg::PoseStamped ndt_pose;
+	ndt_pose.pose.position.x = translation(0,3);
+	ndt_pose.pose.position.y = translation(1,3);
+	ndt_pose.pose.position.z = translation(2,3);
+	//ndt_pose.pose.position.z = 0.0;
+	ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
+	ndt_pose.header.stamp = ekf_pose_.header.stamp;
+	ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
+	ndt_pose_pub_->publish(ndt_pose);
 
-		// publish ndt_pcl
-		sensor_msgs::msg::PointCloud2 ndt_msg;
-		pcl::toROSMsg(*ndt_pcl,ndt_msg);
-		ndt_msg.header.stamp = pc_time_;
-		ndt_msg.header.frame_id = map_frame_id_;
-		ndt_pc_pub_->publish(ndt_msg);
+	// publish ndt_pcl
+	sensor_msgs::msg::PointCloud2 ndt_msg;
+	pcl::toROSMsg(*ndt_pcl,ndt_msg);
+	ndt_msg.header.stamp = pc_time_;
+	ndt_msg.header.frame_id = map_frame_id_;
+	ndt_pc_pub_->publish(ndt_msg);
 	// }
 	// else{
 	// 	std::cout << "Fitness score is large " << std::endl;

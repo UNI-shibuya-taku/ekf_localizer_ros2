@@ -1,5 +1,6 @@
 #include "ekf/ekf.h"
 
+
 EKF::EKF() : Node("EKF")
 {
 	this->declare_parameter<std::string>("ndt_pose_topic_name", "/test/ndt_pose");
@@ -11,6 +12,7 @@ EKF::EKF() : Node("EKF")
     this->declare_parameter<std::string>("base_link_frame_id", "base_link");
     this->declare_parameter<bool>("is_3DoF", true);
     this->declare_parameter<bool>("is_odom_tf", false);
+    this->declare_parameter<bool>("GPS_MEASUREMENT_ENABLE", false);
 	this->declare_parameter<double>("INIT_X", {0.0});
 	this->declare_parameter<double>("INIT_Y", {0.0});
 	this->declare_parameter<double>("INIT_Z", {0.0});
@@ -29,6 +31,8 @@ EKF::EKF() : Node("EKF")
 	this->declare_parameter<double>("TH_COVARIANCE", 1.0);
 	this->declare_parameter<double>("TH_POSE_COVARIANCE", 1.0);
 	this->declare_parameter<double>("TH_DIRECTION_COVARIANCE", 1.0);
+	this->declare_parameter<std::string>("gps_pose_topic_name", "/gps_pose");
+	this->declare_parameter<double>("SIGMA_GPS", 3.0);
 
     // Retrieve the parameters
     this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
@@ -40,6 +44,7 @@ EKF::EKF() : Node("EKF")
     this->get_parameter("base_link_frame_id", base_link_frame_id_);
     this->get_parameter("is_3DoF", is_3DoF_);
     this->get_parameter("is_odom_tf", is_odom_tf_);
+    this->get_parameter("GPS_MEASUREMENT_ENABLE", gps_measurement_enable_);
 
 	this->get_parameter("INIT_X", INIT_X_);
 	this->get_parameter("INIT_Y", INIT_Y_);
@@ -60,6 +65,8 @@ EKF::EKF() : Node("EKF")
 	this->get_parameter("TH_COVARIANCE", th_covariance_);
 	this->get_parameter("TH_POSE_COVARIANCE", th_pose_covariance_);
 	this->get_parameter("TH_DIRECTION_COVARIANCE", th_direction_covariance_);
+	this->get_parameter("gps_pose_topic_name", gps_pose_topic_name_);
+	this->get_parameter("SIGMA_GPS", SIGMA_GPS_);
 
     ndt_pose_sub_  = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         ndt_pose_topic_name_, rclcpp::QoS(1).reliable(),
@@ -70,6 +77,9 @@ EKF::EKF() : Node("EKF")
     odom_sub_  = this->create_subscription<nav_msgs::msg::Odometry>(
         odom_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&EKF::odom_callback, this, std::placeholders::_1));
+	gps_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+		gps_pose_topic_name_, rclcpp::QoS(1).reliable(),
+		std::bind(&EKF::gps_pose_callback, this, std::placeholders::_1));
 
     ekf_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
         ekf_pose_topic_name_, rclcpp::QoS(1).reliable());
@@ -80,6 +90,7 @@ EKF::EKF() : Node("EKF")
 
 	initialize(INIT_X_, INIT_Y_, INIT_Z_, INIT_ROLL_, INIT_PITCH_, INIT_YAW_);
 	is_measurement_.data = false;
+	has_received_gps_ = false;
 	// last_time_ = this->get_clock()->now();
 	ekf_pose_trajectry.header.frame_id = "map"; 
 	std::cout << "\n[THRESHOLD PARAMETERS]" << std::endl;
@@ -87,7 +98,8 @@ EKF::EKF() : Node("EKF")
     std::cout << "  TH_COVARIANCE           : " << std::fixed  << th_covariance_ << std::endl;
     std::cout << "  TH_POSE_COVARIANCE      : " << std::fixed << th_pose_covariance_ << std::endl;
     std::cout << "  TH_DIRECTION_COVARIANCE : " << std::fixed << th_direction_covariance_ << std::endl;
-
+	std::cout << "  SIGMA_GPS               : " << std::fixed << SIGMA_GPS_ << std::endl;
+	std::cout << "  GPS_MEASUREMENT :                : " << std::fixed << gps_measurement_enable_ << std::endl;
 }
 
 EKF::~EKF() {}
@@ -291,10 +303,21 @@ void EKF::motion_update_by_imu(double dt)
     P_ = G * P_ * G.transpose() + A * M * A.transpose();
 }
 
+// void EKF::measurement_update()
+// {
+// 	if(is_3DoF_) measurement_update_3DoF();
+// 	// else measurement_update_6DoF();
+// }
 void EKF::measurement_update()
 {
-	if(is_3DoF_) measurement_update_3DoF();
-	// else measurement_update_6DoF();
+    if(is_3DoF_) {
+        measurement_update_3DoF();
+        // GPS measurement update
+        if(has_received_gps_ && gps_measurement_enable_) {
+            measurement_update_gps();
+        }
+    }
+    // else measurement_update_6DoF();
 }
 
 void EKF::measurement_update_3DoF()
@@ -515,6 +538,98 @@ double EKF::calc_yaw_from_quat(geometry_msgs::msg::Quaternion q)
 	return yaw;
 }
 
+void EKF::gps_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+{
+    gps_pose_ = *msg;
+    has_received_gps_ = true;
+    measurement_update_gps();
+}
+
+void EKF::measurement_update_gps()
+{
+    if(!has_received_gps_) return;
+    
+    std::cout << "GPS measurement update" << std::endl;
+    
+    // Extract GPS position
+    double gps_x = gps_pose_.pose.pose.position.x;
+    double gps_y = gps_pose_.pose.pose.position.y;
+    
+    // Mahalanobis distance check (optional - for outlier rejection)
+    Eigen::VectorXd gps_pos(2);
+    gps_pos << gps_x, gps_y;
+    
+    Eigen::VectorXd ekf_pos(2);
+    ekf_pos << X_(0), X_(1);
+    
+    Eigen::VectorXd diff = gps_pos - ekf_pos;
+    
+    // Extract position covariance (2x2)
+    Eigen::MatrixXd P_pos = P_.block<2,2>(0,0);
+    double det = P_pos.determinant();
+    
+    if(std::abs(det) > 1e-12) {
+        try {
+            Eigen::MatrixXd P_pos_inv = P_pos.inverse();
+            double mahalanobis_dist = std::sqrt(diff.transpose() * P_pos_inv * diff);
+            
+            std::cout << "GPS Mahalanobis distance: " << mahalanobis_dist << std::endl;
+            
+            // Reject if distance is too large (threshold can be adjusted)
+            if(mahalanobis_dist > 10.0) {
+                std::cout << "GPS measurement rejected (large Mahalanobis distance)" << std::endl;
+                has_received_gps_ = false;
+                return;
+            }
+        } catch(const std::exception& e) {
+            std::cout << "GPS Mahalanobis calculation error: " << e.what() << std::endl;
+        }
+    }
+    
+    // Observation vector Z (x, y only)
+    Eigen::VectorXd Z(2);
+    Z << gps_x, gps_y;
+    
+    // Observation matrix H (observe x and y only)
+    Eigen::MatrixXd H = Eigen::MatrixXd::Zero(2, X_.size());
+    H(0, 0) = 1.0;  // x
+    H(1, 1) = 1.0;  // y
+    
+    // Identity matrix
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(), X_.size());
+    
+    // Innovation Y
+    Eigen::VectorXd Y = Z - H * X_;
+    
+    // Observation noise covariance R (use GPS covariance)
+    Eigen::MatrixXd R(2, 2);
+    R << gps_pose_.pose.covariance[0], gps_pose_.pose.covariance[1],
+         gps_pose_.pose.covariance[6], gps_pose_.pose.covariance[7];
+    
+    // Add minimum variance if GPS covariance is too small
+    if(R(0,0) < 1e-6) R(0,0) = SIGMA_GPS_ * SIGMA_GPS_;
+    if(R(1,1) < 1e-6) R(1,1) = SIGMA_GPS_ * SIGMA_GPS_;
+    
+    // Innovation covariance S
+    Eigen::MatrixXd S = H * P_ * H.transpose() + R;
+    
+    // Kalman gain K
+    Eigen::MatrixXd K = P_ * H.transpose() * S.inverse();
+    
+    // State update
+    X_ += K * Y;
+    
+    // Covariance update
+    P_ = (I - K * H) * P_;
+    
+    std::cout << "GPS update applied: dx=" << (K * Y)(0) 
+              << ", dy=" << (K * Y)(1) << std::endl;
+    std::cout << "Updated position: x=" << X_(0) << ", y=" << X_(1) << std::endl;
+    
+    has_received_gps_ = false;
+}
+
+
 void EKF::process()
 {
 	// if(!is_first_imu_ && !is_first_odom_){
@@ -549,91 +664,91 @@ int main(int argc,char** argv)
 	return 0;
 }
 
-void EKF::motion_update(double dt)
-{
-	if(is_3DoF_) motion_update_3DoF(dt);
-	// else motion_update_6DoF(dt);
-}
-// dtの行方
-// motion_update時のタイムスタンプあっていない可能性
-// 並進速度の算出が位置差分のためノイズがありそ
-void EKF::motion_update_3DoF(double dt)
-{
-	// twist情報の作成
-	auto current_position = odom_.pose.pose.position;
-	auto current_time = this->get_clock()->now();
-	geometry_msgs::msg::Twist twist_;
-	double current_v;
+// void EKF::motion_update(double dt)
+// {
+// 	if(is_3DoF_) motion_update_3DoF(dt);
+// 	// else motion_update_6DoF(dt);
+// }
+// // dtの行方
+// // motion_update時のタイムスタンプあっていない可能性
+// // 並進速度の算出が位置差分のためノイズがありそ
+// void EKF::motion_update_3DoF(double dt)
+// {
+// 	// twist情報の作成
+// 	auto current_position = odom_.pose.pose.position;
+// 	auto current_time = this->get_clock()->now();
+// 	geometry_msgs::msg::Twist twist_;
+// 	double current_v;
 
-	Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
+// 	Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
 
-	if (!first_callback_) {
-		// 位置の変化量を計算
-		double dx = current_position.x - last_position_.x;
-		double dy = current_position.y - last_position_.y;
-		double dz = current_position.z - last_position_.z;
-		current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
-	}
-	// 現在の位置と時刻を保存
-	last_position_ = current_position;
-	first_callback_ = false;
-	last_odom_pose_ = current_odom_pose_;
+// 	if (!first_callback_) {
+// 		// 位置の変化量を計算
+// 		double dx = current_position.x - last_position_.x;
+// 		double dy = current_position.y - last_position_.y;
+// 		double dz = current_position.z - last_position_.z;
+// 		current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
+// 	}
+// 	// 現在の位置と時刻を保存
+// 	last_position_ = current_position;
+// 	first_callback_ = false;
+// 	last_odom_pose_ = current_odom_pose_;
 	
-	// ※要改善箇所
-	double nu = current_v;
-	// double nu = twist_.linear.x;
-	// double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
+// 	// ※要改善箇所
+// 	double nu = current_v;
+// 	// double nu = twist_.linear.x;
+// 	// double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
 
-	double omega = imu_.angular_velocity.z; // ここは大丈夫そう odomに切り替えてもバックしたので
-	// double omega = odom_.twist.twist.angular.z;
-	// double omega = get_yaw(odom_.pose.pose.orientation);
+// 	double omega = imu_.angular_velocity.z; // ここは大丈夫そう odomに切り替えてもバックしたので
+// 	// double omega = odom_.twist.twist.angular.z;
+// 	// double omega = get_yaw(odom_.pose.pose.orientation);
 
-	if(std::fabs(omega) < 1e-3) omega = 1e-10;
+// 	if(std::fabs(omega) < 1e-3) omega = 1e-10;
 
-	// M
-	Eigen::MatrixXd M(X_.size() - 1,X_.size() - 1);
-	M.setZero();
-	// M(0,0) = SIGMA_ODOM_*SIGMA_ODOM_;
-	// M(1,1) = SIGMA_IMU_*SIGMA_IMU_;
-	M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
-	M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
+// 	// M
+// 	Eigen::MatrixXd M(X_.size() - 1,X_.size() - 1);
+// 	M.setZero();
+// 	// M(0,0) = SIGMA_ODOM_*SIGMA_ODOM_;
+// 	// M(1,1) = SIGMA_IMU_*SIGMA_IMU_;
+// 	M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+// 	M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
 
-	// A
-	Eigen::Matrix<double,3,2> A;
-	A.setZero();
-	A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
-	A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
-	A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
-	A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
-	A(2,0) = 0.0;
-	A(2,1) = dt;
+// 	// A
+// 	Eigen::Matrix<double,3,2> A;
+// 	A.setZero();
+// 	A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
+// 	A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
+// 	A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
+// 	A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
+// 	A(2,0) = 0.0;
+// 	A(2,1) = dt;
 
-	// G
-	Eigen::MatrixXd G(X_.size(),X_.size());
-	G.setIdentity();
-	G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
-	G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+// 	// G
+// 	Eigen::MatrixXd G(X_.size(),X_.size());
+// 	G.setIdentity();
+// 	G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
+// 	G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
 
-	// state transition
-	if(std::fabs(omega) < 1e-2){
-		X_(0) += nu*std::cos(X_(2))*dt;
-		X_(1) += nu*std::sin(X_(2))*dt;
-		X_(2) += omega*dt;
-	}
-	else{
-		X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
-		X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
-		X_(2) += omega*dt;
-	}
+// 	// state transition
+// 	if(std::fabs(omega) < 1e-2){
+// 		X_(0) += nu*std::cos(X_(2))*dt;
+// 		X_(1) += nu*std::sin(X_(2))*dt;
+// 		X_(2) += omega*dt;
+// 	}
+// 	else{
+// 		X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+// 		X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
+// 		X_(2) += omega*dt;
+// 	}
 	
-	/*
-	X_(0) += nu*std::cos(X_(2))*dt;
-	X_(1) += nu*std::sin(X_(2))*dt;
-	X_(2) += omega*dt;
-	*/
+// 	/*
+// 	X_(0) += nu*std::cos(X_(2))*dt;
+// 	X_(1) += nu*std::sin(X_(2))*dt;
+// 	X_(2) += omega*dt;
+// 	*/
 
-	P_ = G*P_*G.transpose() + A*M*A.transpose();
+// 	P_ = G*P_*G.transpose() + A*M*A.transpose();
 
-	// has_received_imu_ = false;
-	// has_received_odom_ = false;
-}
+// 	// has_received_imu_ = false;
+// 	// has_received_odom_ = false;
+// }

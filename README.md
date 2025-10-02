@@ -24,6 +24,8 @@
 
 ## Install and Build
 ``` bash
+sudo apt update
+sudo apt install libgeographic-dev geographiclib-tools
 # clone repository
 git clone https://github.com/UNI-shibuya-taku/ekf_localizer_ros2.git
 

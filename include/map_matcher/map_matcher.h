@@ -31,6 +31,7 @@
 #include <Eigen/Dense>
 // #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <pclomp/ndt_omp.h>
+#include <optional>
 
 
 class MapMatcher : public rclcpp::Node

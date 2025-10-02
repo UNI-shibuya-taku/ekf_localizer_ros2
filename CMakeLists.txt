@@ -26,6 +26,13 @@ find_package(PCL REQUIRED)
 find_package(ndt_omp REQUIRED)
 # find_package(pclomp REQUIRED)
 find_package(std_srvs REQUIRED)
+# find_package(GeographicLib REQUIRED)
+
+# find_package(PkgConfig REQUIRED)
+# pkg_check_modules(GeographicLib REQUIRED geographic)
+
+set(GeographicLib_INCLUDE_DIRS "/usr/include")
+set(GeographicLib_LIBRARIES "Geographic")
 
 ament_auto_find_build_dependencies()
 
@@ -46,6 +53,7 @@ include_directories(
   ${rclcpp_INCLUDE_DIRS}
   ${Eigen_INCLUDE_DIRS}
   ${ndt_omp_INCLUDE_DIRS}
+  ${GeographicLib_INCLUDE_DIRS}
 )
 
 
@@ -192,6 +200,32 @@ DESTINATION lib/${PROJECT_NAME})
 # install(DIRECTORY launch 
 #   DESTINATION share/${PROJECT_NAME}/
 # )
+
+# GPS Updater Node
+add_executable(gps_updater_node 
+  src/gps_updater.cpp
+)
+
+target_link_libraries(gps_updater_node
+  ${GeographicLib_LIBRARIES}
+  ${YAML_CPP_LIBRARIES}
+  ${std_msgs_LIBRARIES}
+)
+
+ament_target_dependencies(gps_updater_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  geometry_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
+install(TARGETS
+  gps_updater_node
+DESTINATION lib/${PROJECT_NAME})
+
 
 
 # add_executable(pcd_renamer src/pcd_rename.cpp)

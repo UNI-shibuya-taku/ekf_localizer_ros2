@@ -5,7 +5,7 @@ map_matcher_node:
     # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map.pcd
     # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapoudanhodoumade.pcd
     # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapkakunin.pcd
-    pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapkakunin_seg.pcd
+    pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer_ros2/pcd/tsukuba-map.pcd
 
     # Downsampling Parameter
     # この値が大きいほど処理する点群が減る（計算が軽くなる）
@@ -13,7 +13,7 @@ map_matcher_node:
     is_pcl_offset: false
     # NDTのボクセルサイズ(マシンスペックに合わせて調整)
     VOXEL_SIZE: 0.3
-    VOXEL_SIZE_MAP: 0.2
+    VOXEL_SIZE_MAP: 0.4
 
     # Paththrough Parameter
     # 処理する点群の範囲 (m)
