@@ -22,6 +22,12 @@
 #### Publisher
 - /test/ekf_pose(geometry_msgs/msg/PoseStamped)
 
+### GPS updater topics
+#### Subscirber
+- /fix(sensor_msgs::msg::NavSatFix)
+#### Publisher
+- /gps_pose(geometry_msgs::msg::PoseWithCovarianceStamped)
+
 ## Install and Build
 ``` bash
 sudo apt update
