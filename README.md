@@ -57,6 +57,7 @@ colcon build
     TH_COVARIANCE: 1.0 # 変更不要
     TH_POSE_COVARIANCE: 0.4 # 位置の分散の閾値
     TH_DIRECTION_COVARIANCE: 0.2 # 方位の分散の閾値
+    GPS_MEASUREMENT_ENABLE: true # true: GPSによる観測更新を行う false: 行わない
    ```
 
 1. Edit the map_matcher.yaml files:
