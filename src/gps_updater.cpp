@@ -90,8 +90,8 @@ void GpsUpdater::gps_callback(const sensor_msgs::msg::NavSatFix::ConstSharedPtr 
 
 bool GpsUpdater::check_gps_quality(const sensor_msgs::msg::NavSatFix& gps_msg)
 {
-    // fix未満は棄却
-    if(gps_msg.status.status < sensor_msgs::msg::NavSatStatus::STATUS_FIX) {
+    // SBAS_FIX以上だけ信頼
+    if(gps_msg.status.status < sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX){  // 1以上
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
             "GPS: No fix (status: %d)", gps_msg.status.status);
         return false;

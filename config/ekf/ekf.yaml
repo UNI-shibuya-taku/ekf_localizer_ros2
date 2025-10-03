@@ -1,11 +1,11 @@
 ekf_localizer_node:
   ros__parameters:
 
-    # 初期位置設定
+    # 初期位置設定[m]
     INIT_X: 0.0
     INIT_Y: 0.0
     INIT_Z: 0.0 
-    # 初期姿勢設定（今回はroll, pitchはいらない？）
+    # 初期姿勢設定[rad]（今回はroll, pitchはいらない？）
     INIT_ROLL: 0.0
     INIT_PITCH: 0.0
     INIT_YAW: 0.0
@@ -23,10 +23,12 @@ ekf_localizer_node:
     TH_COVARIANCE: 1.0 # 変更不要
     TH_POSE_COVARIANCE: 0.4 # 位置の分散の閾値
     TH_DIRECTION_COVARIANCE: 0.2 # 方位の分散の閾値
+
+    # GPS
     SIGMA_GPS: 3.0  # GPS測位精度 (メートル)
     GPS_MEASUREMENT_ENABLE: true
 
-    #MOTION_NOISE_NN: 0.01
-    #MOTION_NOISE_NO: 0.001
-    #MOTION_NOISE_ON: 0.0001
-    #MOTION_NOISE_OO: 0.0001
+    MOTION_NOISE_NN: 0.01
+    MOTION_NOISE_NO: 0.001
+    MOTION_NOISE_ON: 0.0001
+    MOTION_NOISE_OO: 0.0001

@@ -25,6 +25,12 @@ def generate_launch_description():
         "frame_id": "map",
         "publish_rate": 0.5
     }
+    params_gps_updater = os.path.join(
+        get_package_share_directory('ekf_localizer'),  # パッケージ名
+        'config',  # ディレクトリ名
+        'gps_updater',  # サブディレクトリ
+        'gps_updater.yaml'  # ファイル名
+    )
 
     return LaunchDescription([
         # IncludeLaunchDescription(
@@ -51,14 +57,6 @@ def generate_launch_description():
             parameters=[params_map_matcher],
             # output='screen',  # 標準出力を表示
         ),
-        # wheel_odometryノード
-        Node(
-            package='wheel_odometry',
-            executable='wheel_odometry_node',
-            name='wheel_odometry_node',
-            # output='screen'
-        ),
-
         # ノード3: TF Cub
         Node(
             package='ekf_localizer',
@@ -70,18 +68,17 @@ def generate_launch_description():
             package='ekf_localizer',
             executable='gps_updater_node',
             name='gps_updater',
-            parameters=[{
-                'gps_topic_name': '/fix',
-                'gps_pose_topic_name': '/gps_pose',
-                'map_frame_id': 'map',
-                'use_manual_origin': False,
-                'min_satellites': 6.0,
-                'max_hdop': 3.0,
-                'max_covariance_threshold': 10.0
-            }],
+            parameters=[params_gps_updater],
             output='screen',
         ),
 
+        # wheel_odometryノード
+        # Node(
+        #     package='wheel_odometry',
+        #     executable='wheel_odometry_node',
+        #     name='wheel_odometry_node',
+        #     # output='screen'
+        # ),
         # Node(
         #     package='pcl_ros',
         #     executable='pcd_to_pointcloud',
