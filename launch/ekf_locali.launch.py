@@ -69,7 +69,7 @@ def generate_launch_description():
             executable='gps_updater_node',
             name='gps_updater',
             parameters=[params_gps_updater],
-            output='screen',
+            # output='screen',
         ),
 
         # wheel_odometryノード
