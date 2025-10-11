@@ -25,6 +25,7 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 	this->declare_parameter<double>("MAP_OFFSET_ROLL", {0.0});
 	this->declare_parameter<double>("MAP_OFFSET_PITCH", {0.0});
 	this->declare_parameter<double>("MAP_OFFSET_YAW", {0.0});
+	this->declare_parameter<double>("NDT_HZ", {10.0});
 
 	this->get_parameter("pcd_file_path", pcd_file_path_);
 	this->get_parameter("pc_topic_name", pc_topic_name_);
@@ -50,6 +51,7 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 	this->get_parameter("MAP_OFFSET_ROLL", MAP_OFFSET_ROLL_);
 	this->get_parameter("MAP_OFFSET_PITCH", MAP_OFFSET_PITCH_);
 	this->get_parameter("MAP_OFFSET_YAW", MAP_OFFSET_YAW_);
+	this->get_parameter("NDT_HZ", ndt_hz_);
 
     pc_sub_  = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         pc_topic_name_, rclcpp::QoS(1).reliable(),
@@ -196,36 +198,37 @@ void MapMatcher::matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl,pcl::Poin
 	}
 
 	std::cout << "FitnessScore: " << ndt.getFitnessScore() << std::endl;
-	// if(ndt.getFitnessScore() <= MATCHING_SCORE_TH_){
-	Eigen::Matrix4f translation = ndt.getFinalTransformation();	
-	if(translation.isZero(1e-6))
-	{
-		return;
+	if(ndt.getFitnessScore() <= MATCHING_SCORE_TH_){
+		Eigen::Matrix4f translation = ndt.getFinalTransformation();	
+		if(translation.isZero(1e-6))
+		{
+			return;
+		}
+		Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
+		quaternion.normalize();
+
+		// publish_ndt_pose
+		geometry_msgs::msg::PoseStamped ndt_pose;
+		ndt_pose.pose.position.x = translation(0,3);
+		ndt_pose.pose.position.y = translation(1,3);
+		ndt_pose.pose.position.z = translation(2,3);
+		//ndt_pose.pose.position.z = 0.0;
+		ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
+		ndt_pose.header.stamp = pc_time_; 	
+		// ndt_pose.header.stamp = ekf_pose_.header.stamp;
+		ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
+		ndt_pose_pub_->publish(ndt_pose);
+
+		// publish ndt_pcl
+		sensor_msgs::msg::PointCloud2 ndt_msg;
+		pcl::toROSMsg(*ndt_pcl,ndt_msg);
+		ndt_msg.header.stamp = pc_time_;
+		ndt_msg.header.frame_id = map_frame_id_;
+		ndt_pc_pub_->publish(ndt_msg);
 	}
-	Eigen::Quaternionf quaternion(Eigen::Matrix3f(translation.block(0,0,3,3)));
-	quaternion.normalize();
-
-	// publish_ndt_pose
-	geometry_msgs::msg::PoseStamped ndt_pose;
-	ndt_pose.pose.position.x = translation(0,3);
-	ndt_pose.pose.position.y = translation(1,3);
-	ndt_pose.pose.position.z = translation(2,3);
-	//ndt_pose.pose.position.z = 0.0;
-	ndt_pose.pose.orientation = quat_eigen_to_msg(quaternion);
-	ndt_pose.header.stamp = ekf_pose_.header.stamp;
-	ndt_pose.header.frame_id = ekf_pose_.header.frame_id;
-	ndt_pose_pub_->publish(ndt_pose);
-
-	// publish ndt_pcl
-	sensor_msgs::msg::PointCloud2 ndt_msg;
-	pcl::toROSMsg(*ndt_pcl,ndt_msg);
-	ndt_msg.header.stamp = pc_time_;
-	ndt_msg.header.frame_id = map_frame_id_;
-	ndt_pc_pub_->publish(ndt_msg);
-	// }
-	// else{
-	// 	std::cout << "Fitness score is large " << std::endl;
-	// }
+	else{
+		std::cout << "Fitness score is large " << std::endl;
+	}
 }
 
 double MapMatcher::get_yaw_from_quat(geometry_msgs::msg::Quaternion q)
@@ -372,7 +375,7 @@ int main(int argc,char** argv)
     rclcpp::init(argc, argv); // ノードの初期化
     auto node = std::make_shared<MapMatcher>();
 	node->read_map();
-	// rclcpp::Rate rate(10.0);
+	// rclcpp::Rate rate(node->ndt_hz_);
 	while(rclcpp::ok()){
 		node->process();
 		rclcpp::spin_some(node);

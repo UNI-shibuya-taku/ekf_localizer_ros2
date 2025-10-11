@@ -115,6 +115,7 @@ private:
 	double MAP_OFFSET_ROLL_;
 	double MAP_OFFSET_PITCH_;
 	double MAP_OFFSET_YAW_;
+	double ndt_hz_;
 };
 
 #endif	// MAP_MATCHER_H_

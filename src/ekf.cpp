@@ -1,6 +1,7 @@
 #include "ekf/ekf.h"
 
 
+// TODO NAN対策
 EKF::EKF() : Node("EKF")
 {
 	this->declare_parameter<std::string>("ndt_pose_topic_name", "/test/ndt_pose");
@@ -13,6 +14,7 @@ EKF::EKF() : Node("EKF")
     this->declare_parameter<bool>("is_3DoF", true);
     this->declare_parameter<bool>("is_odom_tf", false);
     this->declare_parameter<bool>("GPS_MEASUREMENT_ENABLE", false);
+    this->declare_parameter<bool>("NDT_MEASUREMENT_ENABLE", false);
 	this->declare_parameter<double>("INIT_X", {0.0});
 	this->declare_parameter<double>("INIT_Y", {0.0});
 	this->declare_parameter<double>("INIT_Z", {0.0});
@@ -33,6 +35,7 @@ EKF::EKF() : Node("EKF")
 	this->declare_parameter<double>("TH_DIRECTION_COVARIANCE", 1.0);
 	this->declare_parameter<std::string>("gps_pose_topic_name", "/gps_pose");
 	this->declare_parameter<double>("SIGMA_GPS", 3.0);
+	this->declare_parameter<double>("EKF_HZ", 30.0);
 
     // Retrieve the parameters
     this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
@@ -45,6 +48,7 @@ EKF::EKF() : Node("EKF")
     this->get_parameter("is_3DoF", is_3DoF_);
     this->get_parameter("is_odom_tf", is_odom_tf_);
     this->get_parameter("GPS_MEASUREMENT_ENABLE", gps_measurement_enable_);
+    this->get_parameter("NDT_MEASUREMENT_ENABLE", ndt_measurement_enable_);
 
 	this->get_parameter("INIT_X", INIT_X_);
 	this->get_parameter("INIT_Y", INIT_Y_);
@@ -67,6 +71,7 @@ EKF::EKF() : Node("EKF")
 	this->get_parameter("TH_DIRECTION_COVARIANCE", th_direction_covariance_);
 	this->get_parameter("gps_pose_topic_name", gps_pose_topic_name_);
 	this->get_parameter("SIGMA_GPS", SIGMA_GPS_);
+	this->get_parameter("EKF_HZ", ekf_hz_);
 
     ndt_pose_sub_  = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         ndt_pose_topic_name_, rclcpp::QoS(1).reliable(),
@@ -100,6 +105,7 @@ EKF::EKF() : Node("EKF")
     std::cout << "  TH_DIRECTION_COVARIANCE : " << std::fixed << th_direction_covariance_ << std::endl;
 	std::cout << "  SIGMA_GPS               : " << std::fixed << SIGMA_GPS_ << std::endl;
 	std::cout << "  GPS_MEASUREMENT :                : " << std::fixed << gps_measurement_enable_ << std::endl;
+	std::cout << "  NDT_MEASUREMENT :                : " << std::fixed << ndt_measurement_enable_ << std::endl;
 }
 
 EKF::~EKF() {}
@@ -197,8 +203,8 @@ void EKF::motion_update_by_odom(double dt)
 	// last_odom_yaw_ = current_yaw;
     
     // 制御入力
-    double nu = current_v;
-	// double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
+    // double nu = current_v;
+	double nu = odom_.twist.twist.linear.x; // 使えるならこれを使うべき
     double omega = odom_.twist.twist.angular.z; // Odomから角速度を取得
     
     // 微小角速度の場合は数値安定性のため小さな値に設定
@@ -311,11 +317,13 @@ void EKF::motion_update_by_imu(double dt)
 void EKF::measurement_update()
 {
     if(is_3DoF_) {
-        measurement_update_3DoF();
+		if(ndt_measurement_enable_){
+        	measurement_update_3DoF();
+		}
         // GPS measurement update
-        if(has_received_gps_ && gps_measurement_enable_) {
-            measurement_update_gps();
-        }
+        // if(has_received_gps_ && gps_measurement_enable_) {
+        //     measurement_update_gps();
+        // }
     }
     // else measurement_update_6DoF();
 }
@@ -340,6 +348,7 @@ void EKF::measurement_update_3DoF()
 		Eigen::VectorXd Y(X_.size());
 		Y.setZero();
 		Y = Z - H*X_;
+		Y(2) = normalize_angle(Y(2));
 
 		// R
 		Eigen::MatrixXd R(X_.size(),X_.size());
@@ -355,6 +364,7 @@ void EKF::measurement_update_3DoF()
 		K = P_*H.transpose()*S.inverse();
 
 		X_ += 1.0*K*Y;
+		X_(2) = normalize_angle(X_(2));
 		P_ = (I - K*H)*P_;
 	}
 }
@@ -448,6 +458,10 @@ void EKF::publish_ekf_pose()
 {
 	ekf_pose_.header.frame_id = map_frame_id_;
 	ekf_pose_.header.stamp = time_publish_; 
+	if(std::isnan(X_(0) || std::isnan(X_(1)))){
+		std::cout << "ekf_pose val NAN!!!"<< std::endl;
+		return;
+	}
 	ekf_pose_.pose.position.x = X_(0);
 	ekf_pose_.pose.position.y = X_(1);
 	if(is_3DoF_){
@@ -542,7 +556,9 @@ void EKF::gps_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped:
 {
     gps_pose_ = *msg;
     has_received_gps_ = true;
-    measurement_update_gps();
+	if(gps_measurement_enable_){
+		measurement_update_gps();
+	}
 }
 
 void EKF::measurement_update_gps()
@@ -654,7 +670,7 @@ int main(int argc,char** argv)
     auto node = std::make_shared<EKF>();
 	// now_time_ = ros::Time::now();
 	// bool is_first_ = true;
-	// rclcpp::Rate rate(10);
+	// rclcpp::Rate rate(node->hz_);
 	while(rclcpp::ok()){
 		// node->process();
 		// last_time_ = now_time_;

@@ -110,6 +110,7 @@ private:
 	bool is_first_odom_ = true;
 	bool is_first_imu_ = true;
 	bool gps_measurement_enable_ = false;
+	bool ndt_measurement_enable_ = false;
 
 	double INIT_X_;
 	double INIT_Y_;
@@ -132,6 +133,7 @@ private:
 	double th_direction_covariance_;
 	double dt_;
 	double SIGMA_GPS_;
+	double ekf_hz_;
 
 	int STATE_SIZE_;
 	Eigen::VectorXd X_;
