@@ -1,34 +1,43 @@
 #ifndef MAP_MATCHER_H_
 #define MAP_MATCHER_H_
 
-#include <rclcpp/rclcpp.hpp>
+#include <memory>
+#include <thread>
 
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <pcl/features/normal_3d.h>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+// #include <pcl/point_cloud.h>
+// #include <pcl/point_types.h>
+// #include <pcl/features/normal_3d.h>
 #include <pcl/registration/ndt.h>
-#include <pcl/registration/correspondence_types.h>
-#include <pcl/registration/correspondence_estimation.h>
-#include <pcl/filters/approximate_voxel_grid.h>
+// #include <pcl/registration/correspondence_types.h>
+// #include <pcl/registration/correspondence_estimation.h>
+// #include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
-#include <pcl/filters/crop_box.h>
+#include <pcl/filters/filter.h>
+// #include <pcl/filters/crop_box.h>
 #include <pcl/io/io.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <tf2_eigen/tf2_eigen.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include "tf2_ros/transform_listener.h"
+#include <tf2_ros/buffer.h>
 
 #include <Eigen/Dense>
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
+// #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <fast_gicp/ndt/ndt_cuda.hpp>
+#include <cuda_runtime.h>
+#include <optional>
+#include <chrono>
+#include <memory>
+
 
 class MapMatcher : public rclcpp::Node
 {
@@ -46,11 +55,16 @@ private:
 	void orb_pc_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 	void ekf_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg);
 	void map_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
+	void initialpose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr& msg);
 
 
  	void init_map();
+	void reset_ndt();
+	void publish_local_map();
 
 	void set_pcl(pcl::PointCloud<pcl::PointXYZI>::Ptr input_pcl, pcl::PointCloud<pcl::PointXYZI>::Ptr& output_pcl, double x, double y, double z);
+	void crop_local_map(const PointCloudTypePtr& input_pcl, PointCloudTypePtr& output_pcl, double x, double y, double z, double range_xy, double range_z);
+	bool update_local_map_if_needed(double x, double y, double z);
 	void downsample_pcl(pcl::PointCloud<pcl::PointXYZI>::Ptr input_pcl, pcl::PointCloud<pcl::PointXYZI>::Ptr& output_pcl, double voxel_size);
 	void matching(pcl::PointCloud<pcl::PointXYZI>::Ptr map_pcl, pcl::PointCloud<pcl::PointXYZI>::Ptr local_pcl);
 
@@ -63,17 +77,25 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr orb_pc_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr ekf_pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr map_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr ndt_pose_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ndt_pc_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
 
 	std::unique_ptr<tf2_ros::Buffer> tfBuffer_;
     std::shared_ptr<tf2_ros::TransformListener> tfListener_;
 	PointCloudTypePtr map_pcl_;
 	PointCloudTypePtr current_pcl_;
 
+	// 切り出し済みのローカル地図とNDTCuda(毎フレーム作り直さないようメンバで保持)
+	PointCloudTypePtr map_local_pcl_;
+	Eigen::Vector3d local_map_center_ = Eigen::Vector3d::Zero();
+	bool has_local_map_ = false;
+	std::unique_ptr<fast_gicp::NDTCuda<PointType, PointType>> ndt_;
+	// PointCloudTypePtr map_pcl_callback_;
+
 	sensor_msgs::msg::PointCloud2 pc_;
-	sensor_msgs::msg::PointCloud2 orb_pc_;
 	geometry_msgs::msg::PoseStamped ekf_pose_;
 	rclcpp::Time pc_time_;
 	bool is_reset_ = true;
@@ -81,27 +103,35 @@ private:
 	bool has_received_ekf_pose_ = false;
 	bool has_received_pc_ = false;
 	bool has_read_map_ = false;
+	bool has_converged_once_ = false;
+	int consecutive_failures_ = 0;
 	bool is_first;
 	bool is_publish_map_;
+	bool is_pcl_offset_;
+	bool is_first_map_ = false;
+	bool publish_local_map_ = false;
 
 	// parameter
 	std::string pcd_file_path_;
 	std::string pc_topic_name_;
 	std::string orb_pc_topic_name_;
 	std::string ekf_pose_topic_name_;
+	std::string initialpose_topic_name_;
 	std::string ndt_pose_topic_name_;
 	std::string map_topic_name_;
 	std::string ndt_pc_topic_name_;
+	std::string local_map_topic_name_;
 	std::string map_frame_id_;
 
-	bool is_pcl_offset_;
 
 	double VOXEL_SIZE_;
+	double VOXEL_SIZE_MAP_;
 	double LIMIT_RANGE_;
+	double LIMIT_RANGE_HEIGHT_;
+	double LOCAL_MAP_UPDATE_DISTANCE_;
 	double TRANS_EPSILON_;
 	double STEP_SIZE_;
 	double RESOLUTION_;
-	double MAX_ITERATION_;
 	double MATCHING_SCORE_TH_;
 	double MAP_OFFSET_X_;
 	double MAP_OFFSET_Y_;
@@ -109,6 +139,8 @@ private:
 	double MAP_OFFSET_ROLL_;
 	double MAP_OFFSET_PITCH_;
 	double MAP_OFFSET_YAW_;
+	double ndt_hz_;
+	double MAX_ITERATION_;
 };
 
 #endif	// MAP_MATCHER_H_

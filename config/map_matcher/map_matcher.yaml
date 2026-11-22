@@ -2,28 +2,46 @@ map_matcher_node:
   ros__parameters:
 
     # pcd path
-    pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapoudanhodoumade.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer/pcd/mapkakunin.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer_ros2/pcd/11-2025tsukuba-map-1004.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer_ros2/pcd/map_tc25_gnss_0_2.pcd
+    # pcd_file_path: /home/cub/colcon_ws/src/cub/ekf_localizer_ros2/pcd/map_vel_tc26.pcd
+    pcd_file_path: /home/cub/maps/1017_02/1017_velodyne.pcd
 
-    # Downsampling Parameter
-    # この値が大きいほど処理する点群が減る（計算が軽くなる）
-    VOXEL_SIZE: 0.05
+    # pcdファイルを読み込んだらpublishするかどうか
+    is_publish_map: true
+    is_pcl_offset: true
 
-    # Paththrough Parameter
-    # 処理する点群の範囲 (m)
-    # 値の距離以内の点群を処理する
-    LIMIT_RANGE: 20.0
+    # デバッグ用：切り出したローカル点群地図をpublishするかどうか（デフォルト: false）
+    publish_local_map: true
+    local_map_topic_name: "/local_map"
 
-    # Matching Parameters # 基本ノータッチで大丈夫です
-    TRANS_EPSILON: 0.001
-    STEP_SIZE: 0.1
-    RESOLUTION: 0.1
-    MAX_ITERATION: 10.0 # 最適化計算を最大何回繰り返すか
+    # LiDAR点群をダウンサンプルする時のボクセルサイズ(マシンスペックに合わせて調整)
+    VOXEL_SIZE: 0.2
+    # map点群をダウンサンプルするときのボクセルサイズ(マシンスペックに合わせて調整)
+    VOXEL_SIZE_MAP: 0.2
+
+    # 値の距離以内の点群を処理する(m)
+    LIMIT_RANGE: 40.0
+    LIMIT_RANGE_HEIGHT: 30.0
+    # 前回地図を切り出した位置からこの距離(m)以上動いたら地図を切り出し直す
+    # 切り出し範囲は LIMIT_RANGE + この値 になる
+    LOCAL_MAP_UPDATE_DISTANCE: 5.0
 
     # Matching Score
     # FitnessScore : 点群地図とLiDAR点群とのマッチング具合を数値化したもの。小さいほどマッチングしている
     # FitnessScoreがMATCHING_SCORE_THを下回っていたら観測更新を行う
-    # MATCHING_SCORE_THを小さくするほど、観測更新を行う条件が厳しくなります
     MATCHING_SCORE_TH: 0.4
+
+    # Matching Parameters # 基本ノータッチで大丈夫です
+    TRANS_EPSILON: 0.001
+    STEP_SIZE: 0.1
+    # RESOLUTION: 0.1
+    RESOLUTION: 0.8
+    MAX_ITERATION: 35.0 # 最適化計算を最大何回繰り返すか
+
 
     # Map Offset
     MAP_OFFSET_X: 0.0

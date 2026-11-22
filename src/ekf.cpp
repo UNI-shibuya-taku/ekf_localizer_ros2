@@ -1,16 +1,22 @@
 #include "ekf/ekf.h"
 
+
+// TODO NAN対策
 EKF::EKF() : Node("EKF")
 {
-	this->declare_parameter<std::string>("ndt_pose_topic_name", "/ndt_pose");
-    this->declare_parameter<std::string>("imu_topic_name", "/bno055/imu");
+	this->declare_parameter<std::string>("ndt_pose_topic_name", "/test/ndt_pose");
+    this->declare_parameter<std::string>("imu_topic_name", "/imu/data_raw");
     this->declare_parameter<std::string>("odom_topic_name", "/odom");
-    this->declare_parameter<std::string>("ekf_pose_topic_name", "/ekf_pose");
+    this->declare_parameter<std::string>("ekf_pose_topic_name", "/test/ekf_pose");
     this->declare_parameter<std::string>("map_frame_id", "map");
     this->declare_parameter<std::string>("odom_frame_id", "odom");
     this->declare_parameter<std::string>("base_link_frame_id", "base_link");
-    this->declare_parameter<bool>("is_3DoF", true);
     this->declare_parameter<bool>("is_odom_tf", false);
+    this->declare_parameter<bool>("use_imu_tf", true);
+    this->declare_parameter<double>("imu_yaw_sign", -1.0);
+    this->declare_parameter<bool>("GPS_MEASUREMENT_ENABLE", false);
+    this->declare_parameter<bool>("NDT_MEASUREMENT_ENABLE", false);
+    this->declare_parameter<bool>("gps_respawn_enable", false);
 	this->declare_parameter<double>("INIT_X", {0.0});
 	this->declare_parameter<double>("INIT_Y", {0.0});
 	this->declare_parameter<double>("INIT_Z", {0.0});
@@ -25,6 +31,30 @@ EKF::EKF() : Node("EKF")
 	this->declare_parameter<double>("MOTION_NOISE_NO", {1e-3});
 	this->declare_parameter<double>("MOTION_NOISE_ON", {1e-3});
 	this->declare_parameter<double>("MOTION_NOISE_OO", {1e-3});
+	this->declare_parameter<double>("TH_MAHALANOBIS", 1.5);
+	this->declare_parameter<double>("TH_COVARIANCE", 1.0);
+	this->declare_parameter<double>("TH_POSE_COVARIANCE", 1.0);
+	this->declare_parameter<double>("TH_DIRECTION_COVARIANCE", 1.0);
+	this->declare_parameter<std::string>("gps_pose_topic_name", "/gps_pose");
+	this->declare_parameter<std::string>("navsat_topic_name", "/um982_node/fix");
+	this->declare_parameter<bool>("require_rtk_fix_for_respawn", true);
+	this->declare_parameter<double>("SIGMA_GPS", 3.0);
+	this->declare_parameter<double>("EKF_HZ", 30.0);
+	this->declare_parameter<std::string>("initialpose_topic_name", "/initialpose");
+    this->declare_parameter<double>("measurement_suppress_duration", 2.0);
+	// GPS高精度リスポーン関連のパラメータ
+	this->declare_parameter<double>("gps_high_confidence_threshold", 1.0);
+	this->declare_parameter<int>("gps_high_quality_count_threshold", 3);
+	this->declare_parameter<double>("gps_respawn_distance_threshold", 3.0);
+	this->declare_parameter<double>("gps_respawn_max_distance", 50.0);
+	this->declare_parameter<bool>("gps_auto_init_enable", true);
+	this->declare_parameter<bool>("gps_auto_yaw_init_enable", true);
+	this->declare_parameter<double>("gps_init_yaw_min_distance", 0.5);
+    this->declare_parameter<double>("MAX_ODOM_VELOCITY", 3.0);
+    this->declare_parameter<double>("MAX_ODOM_ANGULAR_VELOCITY", 2.0);
+    this->declare_parameter<double>("MAX_IMU_ANGULAR_VELOCITY", 2.0);
+    this->declare_parameter<double>("MAX_NDT_POSITION_JUMP", 5.0);
+    this->declare_parameter<double>("MAX_NDT_YAW_JUMP_DEG", 90.0);
 
     // Retrieve the parameters
     this->get_parameter("ndt_pose_topic_name", ndt_pose_topic_name_);
@@ -34,9 +64,12 @@ EKF::EKF() : Node("EKF")
     this->get_parameter("map_frame_id", map_frame_id_);
     this->get_parameter("odom_frame_id", odom_frame_id_);
     this->get_parameter("base_link_frame_id", base_link_frame_id_);
-    this->get_parameter("is_3DoF", is_3DoF_);
     this->get_parameter("is_odom_tf", is_odom_tf_);
-
+    this->get_parameter("use_imu_tf", use_imu_tf_);
+    this->get_parameter("imu_yaw_sign", imu_yaw_sign_);
+    this->get_parameter("GPS_MEASUREMENT_ENABLE", gps_measurement_enable_);
+    this->get_parameter("NDT_MEASUREMENT_ENABLE", ndt_measurement_enable_);
+    this->get_parameter("gps_respawn_enable", gps_respawn_enable_);
 	this->get_parameter("INIT_X", INIT_X_);
 	this->get_parameter("INIT_Y", INIT_Y_);
 	this->get_parameter("INIT_Z", INIT_Z_);
@@ -52,102 +85,761 @@ EKF::EKF() : Node("EKF")
 	this->get_parameter("MOTION_NOISE_ON", MOTION_NOISE_ON_);
 	this->get_parameter("MOTION_NOISE_OO", MOTION_NOISE_OO_);
 
+	this->get_parameter("TH_MAHALANOBIS", th_mahalanobis_);
+	this->get_parameter("TH_COVARIANCE", th_covariance_);
+	this->get_parameter("TH_POSE_COVARIANCE", th_pose_covariance_);
+	this->get_parameter("TH_DIRECTION_COVARIANCE", th_direction_covariance_);
+	this->get_parameter("gps_pose_topic_name", gps_pose_topic_name_);
+	this->get_parameter("navsat_topic_name", navsat_topic_name_);
+	this->get_parameter("require_rtk_fix_for_respawn", require_rtk_fix_for_respawn_);
+	this->get_parameter("SIGMA_GPS", SIGMA_GPS_);
+	this->get_parameter("EKF_HZ", ekf_hz_);
+    this->get_parameter("initialpose_topic_name", initialpose_topic_name_);
+    this->get_parameter("measurement_suppress_duration", measurement_suppress_duration_);
+	// GPS高精度リスポーン関連
+	this->get_parameter("gps_high_confidence_threshold", gps_high_confidence_threshold_);
+	this->get_parameter("gps_high_quality_count_threshold", gps_high_quality_count_threshold_);
+	this->get_parameter("gps_respawn_distance_threshold", gps_respawn_distance_threshold_);
+	this->get_parameter("gps_respawn_max_distance", gps_respawn_max_distance_);
+	this->get_parameter("gps_auto_init_enable", gps_auto_init_enable_);
+	this->get_parameter("gps_auto_yaw_init_enable", gps_auto_yaw_init_enable_);
+	this->get_parameter("gps_init_yaw_min_distance", gps_init_yaw_min_distance_);
+
+    this->get_parameter("MAX_ODOM_VELOCITY", max_odom_velocity_);
+    this->get_parameter("MAX_ODOM_ANGULAR_VELOCITY", max_odom_angular_velocity_);
+    this->get_parameter("MAX_IMU_ANGULAR_VELOCITY", max_imu_angular_velocity_);
+    this->get_parameter("MAX_NDT_POSITION_JUMP", max_ndt_position_jump_);
+    this->get_parameter("MAX_NDT_YAW_JUMP_DEG", max_ndt_yaw_jump_deg_);
 
     ndt_pose_sub_  = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/ndt_pose", rclcpp::QoS(1).reliable(),
+        ndt_pose_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&EKF::ndt_pose_callback, this, std::placeholders::_1));
     imu_sub_  = this->create_subscription<sensor_msgs::msg::Imu>(
         imu_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&EKF::imu_callback, this, std::placeholders::_1));
     odom_sub_  = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", rclcpp::QoS(1).reliable(),
+        odom_topic_name_, rclcpp::QoS(1).reliable(),
         std::bind(&EKF::odom_callback, this, std::placeholders::_1));
+	gps_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+		gps_pose_topic_name_, rclcpp::QoS(1).reliable(),
+		std::bind(&EKF::gps_pose_callback, this, std::placeholders::_1));
+	navsat_sub_ = this->create_subscription<sensor_msgs::msg::NavSatFix>(
+		navsat_topic_name_, rclcpp::SensorDataQoS(),
+		std::bind(&EKF::navsat_callback, this, std::placeholders::_1));
+    initialpose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        initialpose_topic_name_,rclcpp::QoS(1).reliable(),
+        std::bind(&EKF::initialpose_callback, this, std::placeholders::_1));
 
     ekf_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
-        "/ekf_pose", rclcpp::QoS(1).reliable());
-
+        ekf_pose_topic_name_, rclcpp::QoS(1).reliable());
+	// path_pub_ = this->create_publisher<nav_msgs::msg::Path>(
+	// 	"/ekf_pose/trajectory", rclcpp::QoS(1).reliable());
 
 	auto clock = this->get_clock();
 
+	tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+	tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
 	initialize(INIT_X_, INIT_Y_, INIT_Z_, INIT_ROLL_, INIT_PITCH_, INIT_YAW_);
 	is_measurement_.data = false;
-	last_time_ = this->get_clock()->now();
+	has_received_gps_ = false;
+	// GPS高精度リスポーン関連の初期化
+	gps_high_quality_count_ = 0;
+	gps_respawn_in_progress_ = false;
+	
+	// last_time_ = this->get_clock()->now();
+	ekf_pose_trajectry.header.frame_id = "map"; 
+	std::cout << "\n[THRESHOLD PARAMETERS]" << std::endl;
+    std::cout << "  TH_MAHALANOBIS          : " << std::fixed << th_mahalanobis_ << std::endl;
+    std::cout << "  TH_COVARIANCE           : " << std::fixed  << th_covariance_ << std::endl;
+    std::cout << "  TH_POSE_COVARIANCE      : " << std::fixed << th_pose_covariance_ << std::endl;
+    std::cout << "  TH_DIRECTION_COVARIANCE : " << std::fixed << th_direction_covariance_ << std::endl;
+	std::cout << "  SIGMA_GPS               : " << std::fixed << SIGMA_GPS_ << std::endl;
+	std::cout << "  GPS_MEASUREMENT_ENABLE  : " << gps_measurement_enable_ << std::endl;
+	std::cout << "  NDT_MEASUREMENT_ENABLE  : " << ndt_measurement_enable_ << std::endl;
+	std::cout << "\n[GPS RESPAWN PARAMETERS]" << std::endl;
+	std::cout << "  GPS_HIGH_CONF_TH        : " << gps_high_confidence_threshold_ << " m" << std::endl;
+	std::cout << "  GPS_QUALITY_COUNT_TH    : " << gps_high_quality_count_threshold_ << " times" << std::endl;
+	std::cout << "  GPS_RESPAWN_DIST_TH     : " << gps_respawn_distance_threshold_ << " m" << std::endl;
+	std::cout << "  GPS_RESPAWN_MAX_DIST    : " << gps_respawn_max_distance_ << " m" << std::endl;
+    std::cout << "  GPS_RESPAWN_ENABLE      : " << gps_respawn_enable_ << std::endl;
+    std::cout << "  GPS_AUTO_INIT_ENABLE    : " << gps_auto_init_enable_ << std::endl;
+    std::cout << "  GPS_AUTO_YAW_INIT_ENABLE: " << gps_auto_yaw_init_enable_ << std::endl;
+    std::cout << "  GPS_INIT_YAW_MIN_DIST   : " << gps_init_yaw_min_distance_ << " m" << std::endl;
+
+    std::cout << "\n[MOTION UPDATE VALIDATION]" << std::endl;
+    std::cout << "  MAX_ODOM_VELOCITY       : " << max_odom_velocity_ << " m/s" << std::endl;
+    std::cout << "  MAX_ODOM_ANGULAR_VEL    : " << max_odom_angular_velocity_ << " rad/s" << std::endl;
+    std::cout << "  MAX_IMU_ANGULAR_VEL     : " << max_imu_angular_velocity_ << " rad/s" << std::endl;
+    
+    std::cout << "\n[OBSERVATION UPDATE VALIDATION]" << std::endl;
+    std::cout << "  MAX_NDT_POSITION_JUMP   : " << max_ndt_position_jump_ << " m" << std::endl;
+    std::cout << "  MAX_NDT_YAW_JUMP        : " << max_ndt_yaw_jump_deg_ << " deg" << std::endl;
+
 }
 
 EKF::~EKF() {}
 
+void EKF::initialize(double x, double y, double z, double roll, double pitch, double yaw)
+{
+	STATE_SIZE_ = 3;
+	X_.setZero(STATE_SIZE_);
+	P_.setZero(STATE_SIZE_, STATE_SIZE_);
+	P_ = INIT_SIGMA_*Eigen::MatrixXd::Identity(STATE_SIZE_, STATE_SIZE_);
+	set_pose(x, y, z, roll, pitch, yaw);
+}
+
+void EKF::set_pose(double x, double y, double z, double roll, double pitch, double yaw)
+{
+	if(X_.size() != STATE_SIZE_){
+		std::cout << "No matching STATE SIZE" << std::endl;
+		return;
+	}
+	X_(0) = x;
+	X_(1) = y;
+	X_(2) = yaw;
+}
+
+/**
+ * @brief EKFを完全にリセットして指定位置から再スタート
+ * @param x 初期x座標 [m]
+ * @param y 初期y座標 [m]
+ * @param yaw 初期ヨー角 [rad]
+ */
+void EKF::reset_ekf(double x, double y, double yaw)
+{
+    RCLCPP_INFO(this->get_logger(), "=== COMPLETE EKF RESET ===");
+    
+    // 1. 状態ベクトルと共分散を初期化
+    X_.setZero(STATE_SIZE_);
+    P_.setZero(STATE_SIZE_, STATE_SIZE_);
+    P_ = INIT_SIGMA_ * Eigen::MatrixXd::Identity(STATE_SIZE_, STATE_SIZE_);
+    
+    // 2. 指定位置に設定
+    X_(0) = x;
+    X_(1) = y;
+    X_(2) = yaw;
+    
+    RCLCPP_INFO(this->get_logger(), "State initialized: x=%.3f, y=%.3f, yaw=%.3f [rad]", x, y, yaw);
+    
+    // 3. 全てのセンサー受信フラグをリセット
+    has_received_odom_ = false;
+    has_received_imu_ = false;
+    has_received_ndt_pose_ = false;
+    has_received_gps_ = false;
+    
+    // 4. 初回受信フラグをリセット
+    is_first_odom_ = true;
+    is_first_imu_ = true;
+    first_callback_ = true;
+    
+    RCLCPP_INFO(this->get_logger(), "All sensor flags reset to initial state");
+    
+    // 5. オドメトリ関連の履歴をクリア
+    last_odom_eigen = Eigen::Vector3d::Zero();
+    last_odom_pose_ = Eigen::Vector3d::Zero();
+    last_odom_yaw_ = 0.0;
+    
+    // 6. オドメトリメッセージをクリア
+    odom_ = nav_msgs::msg::Odometry();
+    last_odom_pose = nav_msgs::msg::Odometry();
+    
+    // 7. IMUメッセージをクリア
+    imu_ = sensor_msgs::msg::Imu();
+    
+    // 8. NDT・GPSメッセージをクリア
+    ndt_pose_ = geometry_msgs::msg::PoseStamped();
+    gps_pose_ = geometry_msgs::msg::PoseWithCovarianceStamped();
+    
+    // 9. 測定フラグをリセット
+    is_measurement_.data = false;
+    
+    // 10. タイムスタンプを現在時刻にリセット
+    rclcpp::Time now = this->now();
+    time_publish_ = now;
+    last_time_odom_ = now;
+    last_time_imu_ = now;
+    now_time_odom_ = now;
+    now_time_imu_ = now;
+    
+    // 11. 軌跡データをクリア（もし使用している場合）
+    poses_.clear();
+    
+    // 12. 測定更新を一定時間抑制
+    suppress_measurements_after_reset_ = true;
+    measurement_suppress_until_ = now + rclcpp::Duration::from_seconds(measurement_suppress_duration_);
+    
+    // 13. GPS高精度カウンタをリセット
+    gps_high_quality_count_ = 0;
+    is_gps_pose_initialized_ = true;
+    is_gps_yaw_initialized_ = true;
+    
+    RCLCPP_INFO(this->get_logger(), "All history and timestamps cleared");
+    RCLCPP_WARN(this->get_logger(), "  NDT and GPS measurements SUPPRESSED for %.1f seconds", measurement_suppress_duration_);
+    RCLCPP_INFO(this->get_logger(), "Using only odometry and IMU during suppression period");
+    RCLCPP_INFO(this->get_logger(), "=== EKF RESET COMPLETE ===");
+}
+
+/**
+ * @brief RVizの2D Pose Estimateからの初期位置設定コールバック
+ * @param msg 初期位置メッセージ
+ */
+void EKF::initialpose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+{
+    RCLCPP_INFO(this->get_logger(), "========================================");
+    RCLCPP_INFO(this->get_logger(), "📍 Received initial pose from RViz 2D Pose Estimate");
+    
+    // クォータニオンからyawのみを計算
+    double yaw = calc_yaw_from_quat(msg->pose.pose.orientation);
+    
+    // 受信した位置情報を取得 (x, yのみ使用、zは無視)
+    double x = msg->pose.pose.position.x;
+    double y = msg->pose.pose.position.y;
+    
+    RCLCPP_INFO(this->get_logger(), 
+                "Resetting EKF to:");
+    RCLCPP_INFO(this->get_logger(),
+                "  Position: x=%.3f, y=%.3f [m]", x, y);
+    RCLCPP_INFO(this->get_logger(),
+                "  Orientation: yaw=%.3f [rad] (%.1f deg)", yaw, yaw * 180.0 / M_PI);
+    
+    // ✅ reset_ekf()関数を使用（完全リセット + 測定抑制）
+    reset_ekf(x, y, yaw);
+    
+    // ✅ リセット後の状態を即座にパブリッシュ
+    ekf_pose_.header.stamp = this->now();
+    ekf_pose_.header.frame_id = map_frame_id_;
+    ekf_pose_.pose.position.x = X_(0);
+    ekf_pose_.pose.position.y = X_(1);
+    ekf_pose_.pose.position.z = 0.0;
+    ekf_pose_.pose.orientation = rpy_to_msg(0.0, 0.0, X_(2));
+    
+    ekf_pose_pub_->publish(ekf_pose_);
+    
+    RCLCPP_INFO(this->get_logger(), "✓ Initial pose published");
+    RCLCPP_INFO(this->get_logger(), "✓ EKF restarted from specified position");
+    RCLCPP_INFO(this->get_logger(), "========================================");
+}
+
 void EKF::ndt_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
-	ndt_pose_ = *msg;
-	has_received_ndt_pose_ = true;
+    ndt_pose_ = *msg;
+    has_received_ndt_pose_ = true;
+    
+    // ✅ リセット後の抑制期間中はNDT測定更新をスキップ
+    if(suppress_measurements_after_reset_) {
+        if(this->now() < measurement_suppress_until_) {
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "NDT measurement suppressed (reset protection active)");
+            return;
+        } else {
+            suppress_measurements_after_reset_ = false;
+            RCLCPP_INFO(this->get_logger(), "✓ Measurement suppression ended - NDT updates resumed");
+        }
+    }
+    
+    if(ndt_measurement_enable_){
+        measurement_update_3DoF();
+    }
 }
+
 
 void EKF::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
 	odom_ = *msg;
-
-	if(is_odom_tf_){
-		geometry_msgs::msg::TransformStamped transform;
-		transform.header = msg->header;
-		transform.header.frame_id = odom_frame_id_;
-    	transform.child_frame_id = base_link_frame_id_;
-
-    	transform.transform.translation.x = msg->pose.pose.position.x;
-    	transform.transform.translation.y = msg->pose.pose.position.y;
-    	transform.transform.translation.z = msg->pose.pose.position.z;
-    	transform.transform.rotation = msg->pose.pose.orientation;
-
-		broadcaster_->sendTransform(transform);
-	}
-
+    odom_.twist.twist.angular.z = 0.0; // 角速度はimuから取得するため0とする。
 	has_received_odom_ = true;
+	time_publish_ = msg->header.stamp;
+	now_time_odom_ = msg->header.stamp;
+	if(is_first_odom_){
+		dt_ = 0.0;
+		is_first_odom_ = false;
+	}
+	else{
+		try{
+			rclcpp::Duration duration = now_time_odom_ - last_time_odom_;
+			dt_ = duration.seconds();
+		}catch(std::runtime_error& ex) {
+			RCLCPP_ERROR(this->get_logger(), "Exception: [%s]", ex.what());
+			dt_ = 0.0;
+		}
+		if(dt_ > 1e-6){
+			motion_update_by_odom(dt_);
+			publish_ekf_pose();
+		}
+	}
+	last_time_odom_ = now_time_odom_;
+}
+
+void EKF::motion_update_by_odom(double dt)
+{
+    if(dt <= 1e-6) return;
+
+    Eigen::VectorXd X_prev = X_;
+    Eigen::MatrixXd P_prev = P_;
+    
+    // Odomからの並進速度計算
+    auto current_position = odom_.pose.pose.position;
+    double current_v = 0.0;
+    double dyaw = 0.0;
+    
+    Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
+    
+    if (!first_callback_) {
+        current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
+    }
+    
+    last_position_ = current_position;
+    first_callback_ = false;
+    last_odom_pose_ = current_odom_pose_;
+    
+    // 制御入力
+    double nu = odom_.twist.twist.linear.x;
+    double omega = odom_.twist.twist.angular.z;
+
+    if(is_gps_pose_initialized_ && !is_gps_yaw_initialized_) {
+        odom_accum_since_gps_init_ += nu * dt;
+    }
+    
+    if(std::fabs(omega) < 1e-3) omega = 1e-10;
+    
+    // Motion noise covariance matrix M (2x2)
+    Eigen::MatrixXd M(2, 2);
+    M.setZero();
+    M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+    M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
+    
+    // Jacobian of motion model w.r.t. control inputs A (3x2)
+    Eigen::Matrix<double,3,2> A;
+    A.setZero();
+    A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
+    A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
+    A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
+    A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
+    A(2,0) = 0.0;
+    A(2,1) = dt;
+    
+    // Jacobian of motion model w.r.t. state G (3x3)
+    Eigen::MatrixXd G(3, 3);
+    G.setIdentity();
+    G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
+    G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+    
+    // State transition
+    if(std::fabs(omega) < 1e-2){
+        X_(0) += nu*std::cos(X_(2))*dt;
+        X_(1) += nu*std::sin(X_(2))*dt;
+        X_(2) += omega*dt;
+    }
+    else{
+        X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
+        X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
+        X_(2) += omega*dt;
+    }
+    
+    // 角度を正規化
+    X_(2) = normalize_angle(X_(2));
+    
+    // Covariance update
+    P_ = G * P_ * G.transpose() + A * M * A.transpose();
+    
+    // NaN/Infチェック
+    if(!X_.allFinite() || !P_.allFinite()) {
+        X_ = X_prev;
+        P_ = P_prev;
+        return;
+    }
+    
+    // 変化量チェック
+    double dx = X_(0) - X_prev(0);
+    double dy = X_(1) - X_prev(1);
+    double position_change = std::sqrt(dx * dx + dy * dy);
+    double yaw_change = normalize_angle(X_(2) - X_prev(2));
+    
+    // 速度計算
+    double velocity = position_change / dt;
+    double angular_velocity = std::abs(yaw_change) / dt;
+    
+    // 閾値チェック
+    // double max_velocity = 3.0;  // [m/s]
+    // double max_angular_velocity = 2.0;  // [rad/s]
+    
+    if(velocity > max_odom_velocity_) {
+        X_ = X_prev;
+        P_ = P_prev;
+        return;
+    }
+    
+    if(angular_velocity > max_odom_angular_velocity_) {
+        X_ = X_prev;
+        P_ = P_prev;
+        return;
+    }
+}
+
+bool EKF::transform_imu_data(const sensor_msgs::msg::Imu& imu_in, Eigen::Vector3d& omega_base, Eigen::Vector3d& acc_base)
+{
+    Eigen::Vector3d omega_sensor(imu_in.angular_velocity.x, imu_in.angular_velocity.y, imu_in.angular_velocity.z);
+    Eigen::Vector3d acc_sensor(imu_in.linear_acceleration.x, imu_in.linear_acceleration.y, imu_in.linear_acceleration.z);
+
+    if (!use_imu_tf_) {
+        omega_base = omega_sensor;
+        omega_base.z() *= imu_yaw_sign_;
+        acc_base = acc_sensor;
+        return true;
+    }
+
+    const std::string& sensor_frame = imu_in.header.frame_id;
+    if (sensor_frame.empty() || sensor_frame == base_link_frame_id_) {
+        omega_base = omega_sensor;
+        omega_base.z() *= imu_yaw_sign_;
+        acc_base = acc_sensor;
+        return true;
+    }
+
+    try {
+        // base_link <- sensor_frame の変換を取得（静的TFのためTimePointZeroで最新を取得）
+        geometry_msgs::msg::TransformStamped tf_stamped = tf_buffer_->lookupTransform(
+            base_link_frame_id_, sensor_frame, tf2::TimePointZero);
+
+        Eigen::Quaterniond q(
+            tf_stamped.transform.rotation.w,
+            tf_stamped.transform.rotation.x,
+            tf_stamped.transform.rotation.y,
+            tf_stamped.transform.rotation.z);
+
+        imu_to_base_rot_ = q.toRotationMatrix();
+
+        if (!has_imu_tf_) {
+            has_imu_tf_ = true;
+            tf2::Quaternion tf2_q(
+                tf_stamped.transform.rotation.x,
+                tf_stamped.transform.rotation.y,
+                tf_stamped.transform.rotation.z,
+                tf_stamped.transform.rotation.w);
+            double roll, pitch, yaw;
+            tf2::Matrix3x3(tf2_q).getRPY(roll, pitch, yaw);
+            RCLCPP_INFO(this->get_logger(),
+                "✓ IMU TF transform connected: [%s] -> [%s] (rpy: %.1f, %.1f, %.1f deg)",
+                sensor_frame.c_str(), base_link_frame_id_.c_str(),
+                roll * 180.0 / M_PI, pitch * 180.0 / M_PI, yaw * 180.0 / M_PI);
+        }
+
+        omega_base = imu_to_base_rot_ * omega_sensor;
+        acc_base = imu_to_base_rot_ * acc_sensor;
+        return true;
+    } catch (const tf2::TransformException& ex) {
+        if (has_imu_tf_) {
+            omega_base = imu_to_base_rot_ * omega_sensor;
+            acc_base = imu_to_base_rot_ * acc_sensor;
+            return true;
+        }
+        // TFがまだ取得できない場合でも、IMUを破棄せずimu_yaw_signによるフォールバックを適用して積算を継続
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+            "IMU TF transform ([%s] -> [%s]) not available yet: %s. "
+            "Using fallback: applying imu_yaw_sign=%.1f to angular_velocity.z to keep EKF active.",
+            sensor_frame.c_str(), base_link_frame_id_.c_str(), ex.what(), imu_yaw_sign_);
+        omega_base = omega_sensor;
+        omega_base.z() *= imu_yaw_sign_;
+        acc_base = acc_sensor;
+        return true;
+    }
 }
 
 void EKF::imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
 	imu_ = *msg;
+
+	Eigen::Vector3d omega_base, acc_base;
+	if (!transform_imu_data(*msg, omega_base, acc_base)) {
+		// TFがまだ取得できない間は誤った軸で積算しないようスキップ
+		return;
+	}
+	imu_.angular_velocity.x = omega_base.x();
+	imu_.angular_velocity.y = omega_base.y();
+	imu_.angular_velocity.z = omega_base.z();
+	imu_.linear_acceleration.x = acc_base.x();
+	imu_.linear_acceleration.y = acc_base.y();
+	imu_.linear_acceleration.z = acc_base.z();
+
 	has_received_imu_ = true;
-}
-
-void EKF::measurement_callback(const std_msgs::msg::Bool::ConstSharedPtr msg)
-{
-	is_measurement_ = *msg;
-}
-
-
-void EKF::initialize(double x,double y,double z,double roll,double pitch,double yaw)
-{
-	if(is_3DoF_) STATE_SIZE_ = 3;
-	else STATE_SIZE_ = 6;
-
-	X_.setZero(STATE_SIZE_);
-	P_.setZero(STATE_SIZE_, STATE_SIZE_);
-	P_ = INIT_SIGMA_*Eigen::MatrixXd::Identity(STATE_SIZE_, STATE_SIZE_);
-	set_pose(x,y,z,roll,pitch,yaw);
-}
-
-void EKF::set_pose(double x,double y,double z,double roll,double pitch,double yaw)
-{
-	if(is_3DoF_){
-		if(X_.size() != STATE_SIZE_){
-			std::cout << "No matching STATE SIZE" << std::endl;
-			return;
-		}
-		X_(0) = x;
-		X_(1) = y;
-		X_(2) = yaw;
+	time_publish_ = msg->header.stamp;
+	now_time_imu_ = msg->header.stamp;
+	if(is_first_imu_){
+		dt_ = 0.0;
+		is_first_imu_ = false;
 	}
 	else{
-		if(X_.size() != STATE_SIZE_){
-			std::cout << "No matching STATE SIZE" << std::endl;
+		try{
+			rclcpp::Duration duration = now_time_imu_ - last_time_imu_;
+			dt_ = duration.seconds();
+		}catch(std::runtime_error& ex) {
+			RCLCPP_ERROR(this->get_logger(), "Exception: [%s]", ex.what());
+			dt_ = 0.0;
 		}
-		X_(0) = x;
-		X_(1) = y;
-		X_(2) = z;
-		X_(3) = roll;
-		X_(4) = pitch;
-		X_(5) = yaw;
+		if(dt_ > 1e-6){
+			motion_update_by_imu(dt_);
+			publish_ekf_pose();
+		}
 	}
+	last_time_imu_ = now_time_imu_;
+}
+
+void EKF::motion_update_by_imu(double dt)
+{
+    if(dt <= 1e-6) return;
+
+    Eigen::VectorXd X_prev = X_;
+    Eigen::MatrixXd P_prev = P_;
+    
+    double omega = imu_.angular_velocity.z;
+
+    if(is_gps_pose_initialized_ && !is_gps_yaw_initialized_) {
+        yaw_accum_since_gps_init_ += omega * dt;
+    }
+    
+    if(std::fabs(omega) < 1e-3) omega = 1e-10;
+    
+    double nu = 0.0;
+    
+    // Motion noise covariance matrix M (2x2)
+    Eigen::MatrixXd M(2, 2);
+    M.setZero();
+    M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
+    M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
+    
+    // Jacobian of motion model w.r.t. control inputs A (3x2)
+    Eigen::Matrix<double,3,2> A;
+    A.setZero();
+    A(2,1) = dt;
+    
+    // Jacobian of motion model w.r.t. state G (3x3)
+    Eigen::MatrixXd G(3, 3);
+    G.setIdentity();
+    
+    // State transition (IMUは角度のみ更新)
+    X_(2) += omega * dt;
+    
+    // 角度を正規化
+    X_(2) = normalize_angle(X_(2));
+    
+    // Covariance update
+    P_ = G * P_ * G.transpose() + A * M * A.transpose();
+    
+    // NaN/Infチェック
+    if(!X_.allFinite() || !P_.allFinite()) {
+        X_ = X_prev;
+        P_ = P_prev;
+        return;
+    }
+    
+    // 角速度チェック
+    double yaw_change = normalize_angle(X_(2) - X_prev(2));
+    double angular_velocity = std::abs(yaw_change) / dt;
+    // double max_imu_angular_velocity = 2.0;  // [rad/s]
+    
+    if(angular_velocity > max_imu_angular_velocity_) {
+        X_ = X_prev;
+        P_ = P_prev;
+        return;
+    }
+}
+
+void EKF::measurement_update_3DoF()
+{
+    Eigen::VectorXd X_prev = X_;
+    Eigen::MatrixXd P_prev = P_;
+    
+    if(check_ekf_covariance(ekf_pose_) || check_mahalanobis_distance(ekf_pose_, ndt_pose_)){
+        // Z
+        Eigen::VectorXd Z(X_.size());
+        Z.setZero();
+        Z(0) = ndt_pose_.pose.position.x;
+        Z(1) = ndt_pose_.pose.position.y;
+        Z(2) = calc_yaw_from_quat(ndt_pose_.pose.orientation);
+
+        // H
+        Eigen::MatrixXd H = Eigen::MatrixXd::Identity(X_.size(),X_.size());
+
+        // I
+        Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(),X_.size());
+
+        // Y
+        Eigen::VectorXd Y(X_.size());
+        Y.setZero();
+        Y = Z - H*X_;
+        Y(2) = normalize_angle(Y(2));
+
+        // R
+        Eigen::MatrixXd R(X_.size(),X_.size());
+        R = SIGMA_NDT_*Eigen::MatrixXd::Identity(X_.size(),X_.size());
+
+        // S
+        Eigen::MatrixXd S(X_.size(),X_.size());
+        S.setZero();
+        S = H*P_*H.transpose() + R;
+
+        // K
+        Eigen::MatrixXd K(X_.size(),X_.size());
+        K = P_*H.transpose()*S.inverse();
+
+        X_ += 1.0*K*Y;
+        X_(2) = normalize_angle(X_(2));
+        P_ = (I - K*H)*P_;
+        
+        // NaN/Infチェック
+        if(!X_.allFinite() || !P_.allFinite()) {
+            X_ = X_prev;
+            P_ = P_prev;
+            return;
+        }
+        
+        // 変化量チェック
+        double dx = X_(0) - X_prev(0);
+        double dy = X_(1) - X_prev(1);
+        double position_change = std::sqrt(dx * dx + dy * dy);
+        double yaw_change = normalize_angle(X_(2) - X_prev(2));
+        double yaw_change_deg = std::abs(yaw_change) * 180.0 / M_PI;
+        
+        std::cout << "[NDT UPDATE CHECK]" << std::endl;
+        std::cout << "  Position change: " << std::fixed << std::setprecision(3) 
+                  << position_change << " m" << std::endl;
+        std::cout << "  Yaw change: " << yaw_change << " rad (" 
+                  << yaw_change_deg << " deg)" << std::endl;
+        
+        // 閾値チェック（観測更新では大きな変化も許容するが、異常値は棄却）
+        // double max_ndt_position_jump = 5.0;  // [m]
+        // double max_ndt_yaw_jump_deg = 90.0;   // [deg] 観測更新では大きめに
+        
+        if(position_change > max_ndt_position_jump_) {
+            X_ = X_prev;
+            P_ = P_prev;
+            return;
+        }
+        
+        if(yaw_change_deg > max_ndt_yaw_jump_deg_ && is_gps_yaw_initialized_) {
+            std::cout << "  Yaw: " << std::fixed << std::setprecision(3) 
+                      << X_prev(2) << " rad → " << X_(2) << " rad" << std::endl;
+            X_ = X_prev;
+            P_ = P_prev;
+            return;
+        }
+        
+        is_gps_yaw_initialized_ = true;
+        std::cout << "✓ NDT update accepted" << std::endl;
+    }
+}
+
+// 距離が大ならmeasurement_updateしない
+// ekf_pose, ndt_pose
+bool EKF::check_mahalanobis_distance(geometry_msgs::msg::PoseStamped ekf_pose, geometry_msgs::msg::PoseStamped ndt_pose)
+{
+	std::cout << "CHECK distance" << std::endl;
+
+	// 共分散行列が逆行列可能かチェック
+	double det = P_.determinant();
+	if (std::abs(det) < 1e-12) {
+		std::cout << "Covariance matrix is singular, accepting measurement" << std::endl;
+		return true; // 共分散が特異の場合は測定値を受け入れ
+	}
+
+	Eigen::VectorXd ndt_eigen = Eigen::VectorXd::Zero(3);
+	Eigen::VectorXd ekf_eigen = Eigen::VectorXd::Zero(3);
+  	const double ndt_yaw = tf2::getYaw(ndt_pose.pose.orientation);
+  	const double ekf_yaw = tf2::getYaw(ekf_pose.pose.orientation);
+
+  	ndt_eigen << ndt_pose.pose.position.x, ndt_pose.pose.position.y, ndt_yaw;
+  	// ekf_eigen << ekf_pose.pose.position.x, ekf_pose.pose.position.y, ekf_yaw;
+  	ekf_eigen << X_(0), X_(1), X_(2);
+
+	Eigen::VectorXd diff = ndt_eigen - ekf_eigen;
+	diff(2) = normalize_angle(diff(2)); // ヨー角差分を-π〜πに正規化
+	std::cout << "✓ Normalized angle difference: " << diff(2) << " rad" << std::endl;
+
+	try {
+		// 数値安定性のために疑似逆行列を使用
+		Eigen::MatrixXd P_inv = P_.completeOrthogonalDecomposition().pseudoInverse();
+		double mahalanobis_distance = std::sqrt(diff.transpose() * P_inv * diff);
+		
+		std::cout << "Mahalanobis distance calculated: " << mahalanobis_distance << std::endl;
+		std::cout << "Threshold: " << th_mahalanobis_ << std::endl;
+		
+		// 閾値を超えていなかったらmeasurement_updateする
+		if(mahalanobis_distance <= th_mahalanobis_){
+			std::cout << "Short distance! Accepting measurement" << std::endl;
+			return true;
+		}
+		std::cout << "Large distance! Rejecting measurement" << std::endl;
+		return false;
+	}
+	catch(const std::exception& e) {
+		std::cout << " Exception in Mahalanobis calculation: " << e.what() << std::endl;
+		std::cout << " Accepting measurement due to calculation error" << std::endl;
+		return true; // 計算失敗時は測定値を受け入れ
+	}
+
+	return false;
+}
+
+bool EKF::check_ekf_covariance(geometry_msgs::msg::PoseStamped ekf_pose)
+{
+	std::cout << "CHECK covariance" << std::endl;
+
+	if(P_.rows() < 3 || P_.cols() < 3) {
+		std::cout << " Invalid covariance matrix dimensions: " << P_.rows() << "x" << P_.cols() << std::endl;
+		return true; // 行列が無効の場合は強制更新
+	}
+	std::cout << "Covariance matrix dimensions: " << P_.rows() << "x" << P_.cols() << std::endl;
+
+	// ekf_poseの分散が大きければ強制measuremeent_update
+	const double variance_x    = P_(0, 0);
+	const double covariance_xy = P_(0, 1);
+	const double variance_y    = P_(1, 1);
+	const double variance_yaw  = P_(2, 2);
+
+	if((variance_x > th_pose_covariance_) || (covariance_xy > th_pose_covariance_)
+		|| (variance_y > th_pose_covariance_) || (variance_yaw > th_direction_covariance_))
+	{
+		std::cout << "BIG covariance... " << std::endl;
+		return true; // 強制measurement update
+	}
+	return false;
+}
+
+void EKF::publish_ekf_pose()
+{
+	ekf_pose_.header.frame_id = map_frame_id_;
+	if (time_publish_.nanoseconds() > 0) {
+		ekf_pose_.header.stamp = time_publish_;
+	} else {
+		ekf_pose_.header.stamp = this->get_clock()->now();
+	}
+	if(std::isnan(X_(0)) || std::isnan(X_(1)) || std::isnan(X_(2)) ||
+	   std::isinf(X_(0)) || std::isinf(X_(1)) || std::isinf(X_(2))){
+		std::cout << "ekf_pose val NAN/INF!!!"<< std::endl;
+		return;
+	}
+	ekf_pose_.pose.position.x = X_(0);
+	ekf_pose_.pose.position.y = X_(1);
+	ekf_pose_.pose.position.z = ndt_pose_.pose.position.z;
+	//ekf_pose_.pose.position.z = 0.0;
+	ekf_pose_.pose.orientation = rpy_to_msg(0.0,0.0,X_(2));
+
+	// std::cout << "EKF POSE: " << std::endl;
+	// std::cout << "  X   : " << X_(0) << std::endl;
+	// std::cout << "  Y   : " << X_(1) << std::endl;
+	// std::cout << " YAW  : " << X_(2) << std::endl;
+	// std::cout << std::endl;
+
+	// 配列に追加
+	// poses_.push_back(ekf_pose_);
+
+	// Pathメッセージを更新
+	// ekf_pose_trajectry.header.stamp = this->get_clock()->now();
+	// ekf_pose_trajectry.poses = poses_;
+
+	ekf_pose_pub_->publish(ekf_pose_);
+	// path_pub_->publish(ekf_pose_trajectry);
 }
 
 void EKF::calc_rpy_from_quat(geometry_msgs::msg::Quaternion q,double& roll,double& pitch,double& yaw)
@@ -155,238 +847,6 @@ void EKF::calc_rpy_from_quat(geometry_msgs::msg::Quaternion q,double& roll,doubl
 	tf2::Quaternion quaternion(q.x,q.y,q.z,q.w);
 	tf2::Matrix3x3(quaternion).getRPY(roll,pitch,yaw);
 }
-
-void EKF::motion_update_3DoF(double dt)
-{
-	// twist情報の作成
-	auto current_position = odom_.pose.pose.position;
-	auto current_time = this->get_clock()->now();
-	geometry_msgs::msg::Twist twist_;
-	double current_v;
-
-	Eigen::Vector3d current_odom_pose_(odom_.pose.pose.position.x, odom_.pose.pose.position.y, 0);
-
-	if (!first_callback_) {
-		// 位置の変化量を計算
-		double dx = current_position.x - last_position_.x;
-		double dy = current_position.y - last_position_.y;
-		double dz = current_position.z - last_position_.z;
-		// 経過時間を計算（秒単位）
-		// double dt = (current_time - last_time_).seconds();
-
-		// double distance = std::sqrt(dx * dx + dy * dy + dz * dz);	
-		// if (distance > 1.0) {  // 適切な閾値に設定
-		// 	RCLCPP_WARN(this->get_logger(), "Position change is too large, skipping update");
-		// 	return;
-		// }
-		current_v = (current_odom_pose_ - last_odom_pose_).norm() / dt;
-
-		// if (dt > 0) {
-		// 	// 速度を計算
-		// 	twist_.linear.x = dx / dt;
-		// 	twist_.linear.y = dy / dt;
-		// 	twist_.linear.z = dz / dt;
-		// }
-	}
-	// 現在の位置と時刻を保存
-	last_position_ = current_position;
-	last_time_ = current_time;
-	first_callback_ = false;
-
-	last_odom_pose_ = current_odom_pose_;
-	
-	double nu = current_v;
-	// double nu = twist_.linear.x;
-	// double nu = odom_.twist.twist.linear.x;
-	double omega = imu_.angular_velocity.z; // ここは大丈夫そう odomに切り替えてもバックしたので
-	// double omega = odom_.twist.twist.angular.z;
-	// double omega = get_yaw(odom_.pose.pose.orientation);
-
-
-	if(std::fabs(omega) < 1e-3) omega = 1e-10;
-
-	// M
-	Eigen::MatrixXd M(X_.size() - 1,X_.size() - 1);
-	M.setZero();
-	M(0,0) = SIGMA_ODOM_*SIGMA_ODOM_;
-	M(1,1) = SIGMA_IMU_*SIGMA_IMU_;
-	//M(0,0) = std::pow(MOTION_NOISE_NN_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_NO_,2)*std::fabs(omega)/dt;
-	//M(1,1) = std::pow(MOTION_NOISE_ON_,2)*std::fabs(nu)/dt + std::pow(MOTION_NOISE_OO_,2)*std::fabs(omega)/dt;
-
-	// A
-	Eigen::Matrix<double,3,2> A;
-	A.setZero();
-	A(0,0) = (std::sin(X_(2) + omega*dt) - std::sin(X_(2)))/omega;
-	A(0,1) = -nu/std::pow(omega,2)*(std::sin(X_(2) + omega*dt) - std::sin(X_(2))) + nu/omega*dt*std::cos(X_(2) + omega*dt);
-	A(1,0) = (-std::cos(X_(2) + omega*dt) + std::cos(X_(2)))/omega;
-	A(1,1) = -nu/std::pow(omega,2)*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2))) + nu/omega*dt*std::sin(X_(2) + omega*dt);
-	A(2,0) = 0.0;
-	A(2,1) = dt;
-
-	// G
-	Eigen::MatrixXd G(X_.size(),X_.size());
-	G.setIdentity();
-	G(0,2) = nu/omega*(std::cos(X_(2) + omega*dt) - std::cos(X_(2)));
-	G(1,2) = nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
-
-	// state transition
-	if(std::fabs(omega) < 1e-2){
-		X_(0) += nu*std::cos(X_(2))*dt;
-		X_(1) += nu*std::sin(X_(2))*dt;
-		X_(2) += omega*dt;
-	}
-	else{
-		X_(0) += nu/omega*(std::sin(X_(2) + omega*dt) - std::sin(X_(2)));
-		X_(1) += nu/omega*(-std::cos(X_(2) + omega*dt) + std::cos(X_(2)));
-		X_(2) += omega*dt;
-	}
-	
-	/*
-	X_(0) += nu*std::cos(X_(2))*dt;
-	X_(1) += nu*std::sin(X_(2))*dt;
-	X_(2) += omega*dt;
-	*/
-
-	P_ = G*P_*G.transpose() + A*M*A.transpose();
-}
-
-// double EKF::get_yaw(geometry_msgs::Quaternion q)
-// {
-//     double roll , pitch , yaw;
-//     tf::Quaternion quat(q.x, q.y, q.z, q.w);
-//     tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
-//     return yaw;
-// }
-
-
-
-void EKF::motion_update(double dt)
-{
-	if(is_3DoF_) motion_update_3DoF(dt);
-	else motion_update_6DoF(dt);
-}
-
-void EKF::measurement_update_3DoF()
-{
-	// Z
-	Eigen::VectorXd Z(X_.size());
-	Z.setZero();
-	Z(0) = ndt_pose_.pose.position.x;
-	Z(1) = ndt_pose_.pose.position.y;
-	Z(2) = calc_yaw_from_quat(ndt_pose_.pose.orientation);
-
-	// H
-	Eigen::MatrixXd H = Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-	// I
-	Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-	// Y
-	Eigen::VectorXd Y(X_.size());
-	Y.setZero();
-	Y = Z - H*X_;
-
-	// R
-	Eigen::MatrixXd R(X_.size(),X_.size());
-	R = SIGMA_NDT_*Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-
-	// S
-	Eigen::MatrixXd S(X_.size(),X_.size());
-	S.setZero();
-	S = H*P_*H.transpose() + R;
-
-	// K
-	Eigen::MatrixXd K(X_.size(),X_.size());
-	K = P_*H.transpose()*S.inverse();
-
-	X_ += 1.0*K*Y;
-	P_ = (I - K*H)*P_;
-}
-
-
-void EKF::measurement_update()
-{
-	if(is_3DoF_) measurement_update_3DoF();
-	else measurement_update_6DoF();
-}
-
-
-void EKF::publish_ekf_pose()
-{
-	ekf_pose_.header.frame_id = map_frame_id_;
-	ekf_pose_.pose.position.x = X_(0);
-	ekf_pose_.pose.position.y = X_(1);
-	if(is_3DoF_){
-		ekf_pose_.pose.position.z = ndt_pose_.pose.position.z;
-		//ekf_pose_.pose.position.z = 0.0;
-		ekf_pose_.pose.orientation = rpy_to_msg(0.0,0.0,X_(2));
-
-
-		std::cout << "EKF POSE: " << std::endl;
-		std::cout << "  X   : " << X_(0) << std::endl;
-		std::cout << "  Y   : " << X_(1) << std::endl;
-		std::cout << " YAW  : " << X_(2) << std::endl;
-		std::cout << std::endl;
-
-	}
-	else{
-		ekf_pose_.pose.position.z = X_(2);
-		ekf_pose_.pose.orientation = rpy_to_msg(X_(3),X_(4),X_(5));
-
-		std::cout << "EKF POSE: " << std::endl;
-		std::cout << "  X   : " << X_(0) << std::endl;
-		std::cout << "  Y   : " << X_(1) << std::endl;
-		std::cout << "  Z   : " << X_(2) << std::endl;
-		std::cout << " ROLL : " << X_(3) << std::endl;
-		std::cout << "PITCH : " << X_(4) << std::endl;
-		std::cout << " YAW  : " << X_(5) << std::endl;
-		std::cout << std::endl;
-	}
-
-	// ekf_pose_pub_.publish(ekf_pose_);
-	ekf_pose_pub_->publish(ekf_pose_);
-}
-
-// void EKF::publish_tf()
-// {
-// 	try{
-// 		tf2::Quaternion q;
-// 		tf2::Transform map_transform;
-// 		if(is_3DoF_){
-// 			q.setRPY(0.0,0.0,X_(2));
-// 			//tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),0.0));
-// 			tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),ndt_pose_.pose.position.z));
-// 			map_transform = transform;
-// 		}
-// 		else{
-// 			q.setRPY(X_(3),X_(4),X_(5));
-// 			tf2::Transform transform(q,tf2::Vector3(X_(0),X_(1),X_(2)));
-// 			map_transform = transform;
-// 		}
-// 		geometry_msgs::msg::PoseStamped tf_stamped;
-// 		tf_stamped.header.frame_id = base_link_frame_id_;
-// 		tf_stamped.header.stamp = odom_.header.stamp;
-// 		tf2::toMsg(map_transform.inverse(),tf_stamped.pose);
-// 		geometry_msgs::msg::PoseStamped odom_to_map;
-// 		buffer_->transform(tf_stamped,odom_to_map,odom_frame_id_);
-
-// 		tf2::Transform latest_tf;
-// 		tf2::convert(odom_to_map.pose,latest_tf);
-// 		geometry_msgs::msg::TransformStamped tmp_tf_stamped;
-// 		// geometry_msgs::TransformStamped tmp_tf_stamped;
-// 		tmp_tf_stamped.header.stamp = odom_.header.stamp;
-// 		tmp_tf_stamped.header.frame_id = map_frame_id_;
-// 		tmp_tf_stamped.child_frame_id = odom_frame_id_;
-// 		tf2::convert(latest_tf.inverse(),tmp_tf_stamped.transform);
-// 		broadcaster_->sendTransform(tmp_tf_stamped);
-// 	}
-// 	catch(tf2::TransformException& ex){
-// 		// ROS_WARN("%s", ex.what());
-// 		return;
-// 	}
-
-// }
 
 geometry_msgs::msg::Quaternion EKF::rpy_to_msg(double roll,double pitch,double yaw)
 {
@@ -397,7 +857,6 @@ geometry_msgs::msg::Quaternion EKF::rpy_to_msg(double roll,double pitch,double y
 	msg.y = quaternion.y();
 	msg.z = quaternion.z();
 	msg.w = quaternion.w();
-
 	return msg;
 }
 
@@ -414,7 +873,6 @@ Eigen::Matrix3d EKF::calc_rotation_matrix(Eigen::Vector3d euler_angle)
 	rotation <<  C_p*C_y, S_r*S_p*C_y - C_r*S_y, C_r*S_p*C_y + S_r*S_y,
 		         C_p*S_y, S_r*S_p*S_y + C_r*C_y, C_r*S_p*S_y - S_r*C_y,
 			    -S_p    , S_r*C_p              , C_r*C_p;
-
 	return rotation;
 }
 
@@ -423,156 +881,541 @@ Eigen::VectorXd EKF::measurement_function(Eigen::VectorXd x,Eigen::MatrixXd h)
 	return h*x;
 }
 
-double EKF::normalize_angle(double angle) { return std::atan2(std::sin(angle),std::cos(angle)); }
+double EKF::normalize_angle(double angle) 
+{
+	 return std::atan2(std::sin(angle),std::cos(angle)); 
+}
 
 double EKF::calc_yaw_from_quat(geometry_msgs::msg::Quaternion q)
 {
 	double roll, pitch, yaw;
 	tf2::Quaternion quaternion(q.x,q.y,q.z,q.w);
 	tf2::Matrix3x3(quaternion).getRPY(roll,pitch,yaw);
-
 	return yaw;
+}
+
+/**
+ * @brief GPS FIX品質判定（RTK-FIXレベルの高精度か）
+ * @param gps_pose GPSポーズメッセージ
+ * @return true: 高精度FIX, false: 通常品質
+ */
+bool EKF::is_gps_fix_quality(const geometry_msgs::msg::PoseWithCovarianceStamped& gps_pose)
+{
+    // RTK-FIXステータスチェック（/fixトピックを受信している場合）
+    if(require_rtk_fix_for_respawn_) {
+        if(has_received_navsat_) {
+            double elapsed = (this->now() - last_navsat_time_).seconds();
+            if(elapsed > 2.0) {
+                std::cout << "[GPS RESPAWN BLOCKED] NavSatFix data is stale (" << elapsed << " s > 2.0 s)" << std::endl;
+                return false;
+            }
+            if(!is_rtk_fixed_) {
+                std::cout << "[GPS RESPAWN BLOCKED] GNSS is not RTK-FIX" << std::endl;
+                return false;
+            }
+        }
+    }
+
+    // 共分散が有効かチェック
+    double sigma_x = std::sqrt(gps_pose.pose.covariance[0]);
+    double sigma_y = std::sqrt(gps_pose.pose.covariance[7]);
+    
+    // NaNチェック
+    if(std::isnan(sigma_x) || std::isnan(sigma_y)) {
+        return false;
+    }
+    
+    // ゼロチェック（共分散情報が無効）
+    if(sigma_x < 1e-9 || sigma_y < 1e-9) {
+        return false;
+    }
+    
+    // 水平標準偏差を計算
+    double horizontal_sigma = std::sqrt(sigma_x * sigma_x + sigma_y * sigma_y);
+    
+    // 高精度判定（RTK-FIX想定: < gps_high_confidence_threshold_）
+    bool is_high_precision = (horizontal_sigma < gps_high_confidence_threshold_);
+    
+    if(is_high_precision) {
+        std::cout << "✓ GPS HIGH PRECISION (RTK-FIX): σ_h=" << std::fixed << std::setprecision(3) 
+                  << horizontal_sigma << " m (threshold: " << gps_high_confidence_threshold_ 
+                  << " m)" << std::endl;
+    }
+    
+    return is_high_precision;
+}
+
+/**
+ * @brief GPSリスポーンを実行すべきか判定
+ * @param gps_pose GPSポーズメッセージ
+ * @return true: リスポーン実行, false: 通常のEKF更新
+ */
+bool EKF::should_gps_respawn(const geometry_msgs::msg::PoseWithCovarianceStamped& gps_pose)
+{
+    // GPS品質チェック
+    if(!is_gps_fix_quality(gps_pose)) {
+        gps_high_quality_count_ = 0;
+        return false;
+    }
+    
+    gps_high_quality_count_++;
+    
+    std::cout << "GPS high quality count: " << gps_high_quality_count_ 
+              << "/" << gps_high_quality_count_threshold_ << std::endl;
+    
+    if(gps_high_quality_count_ < gps_high_quality_count_threshold_) {
+        return false;
+    }
+    
+    // 距離計算
+    double gps_x = gps_pose.pose.pose.position.x;
+    double gps_y = gps_pose.pose.pose.position.y;
+    
+    double dx = gps_x - X_(0);
+    double dy = gps_y - X_(1);
+    double distance = std::sqrt(dx * dx + dy * dy);
+    
+    std::cout << "GPS-EKF distance: " << std::fixed << std::setprecision(3) 
+              << distance << " m" << std::endl;
+    
+    // GPS高精度の場合は最小距離チェックをスキップ
+    std::cout << "GPS high precision - respawn approved" << std::endl;
+
+    // 最小距離チェック（オプション: 完全に削除してもOK）
+    if(distance < gps_respawn_distance_threshold_) {
+        std::cout << "Distance too small for respawn (" << std::fixed << std::setprecision(3)
+                  << distance << " < " << gps_respawn_distance_threshold_ 
+                  << " m)" << std::endl;
+        return false;
+    }
+    
+    // 異常値チェック（念のため残す）
+    if(distance > gps_respawn_max_distance_) {
+        std::cout << " Distance too large - possible GPS anomaly (" 
+                  << std::fixed << std::setprecision(3) << distance << " > " 
+                  << gps_respawn_max_distance_ << " m)" << std::endl;
+        gps_high_quality_count_ = 0;
+        return false;
+    }
+    
+    return true;  // GPS高精度なら距離に関係なくリスポーン
+}
+
+/**
+ * @brief オドメトリ基準位置を更新（リスポーン時の整合性確保）
+ * @param dx X方向の移動量
+ * @param dy Y方向の移動量
+ */
+void EKF::update_odometry_reference(double dx, double dy)
+{
+    // オドメトリEigen形式の基準を更新
+    last_odom_eigen(0) += dx;
+    last_odom_eigen(1) += dy;
+    
+    // オドメトリVector3d形式の基準を更新
+    last_odom_pose_(0) += dx;
+    last_odom_pose_(1) += dy;
+    
+    // オドメトリメッセージ形式の基準を更新
+    if(has_received_odom_) {
+        last_odom_pose.pose.pose.position.x += dx;
+        last_odom_pose.pose.pose.position.y += dy;
+    }
+    
+    std::cout << "[DEBUG] Odometry reference updated: dx=" << std::fixed 
+              << std::setprecision(3) << dx << ", dy=" << dy << std::endl;
+}
+
+/**
+ * @brief GPS絶対座標への段階的リスポーン
+ * @param gps_x GPS絶対X座標
+ * @param gps_y GPS絶対Y座標
+ * @details 距離に応じて段階的に補正し、時系列情報を保持
+ */
+void EKF::gps_gradual_respawn(double gps_x, double gps_y)
+{
+    std::cout << "========================================" << std::endl;
+    std::cout << "=== GPS GRADUAL RESPAWN START ===" << std::endl;
+    
+    gps_respawn_in_progress_ = true;
+    
+    // 現在のEKF状態を保存
+    double prev_x = X_(0);
+    double prev_y = X_(1);
+    double prev_yaw = X_(2);
+    
+    // GPS-EKF間の差分を計算
+    double dx = gps_x - prev_x;
+    double dy = gps_y - prev_y;
+    double distance = std::sqrt(dx * dx + dy * dy);
+    
+    std::cout << "GPS-EKF distance: " << std::fixed << std::setprecision(3) 
+              << distance << " m" << std::endl;
+    std::cout << "  EKF: (" << std::fixed << std::setprecision(3) 
+              << prev_x << ", " << prev_y << ")" << std::endl;
+    std::cout << "  GPS: (" << std::fixed << std::setprecision(3) 
+              << gps_x << ", " << gps_y << ")" << std::endl;
+    
+    // 距離に応じた補正戦略を選択
+    double alpha;  // GPS側の重み（0.0〜1.0）
+    double suppress_duration;
+    
+    if(distance < 5.0) {
+        // 小さい補正: GPS寄りの重み付き平均
+        alpha = 0.8;  // GPS 80%
+        suppress_duration = 0.0;  // 抑制なし
+        std::cout << "Strategy: Small correction (alpha=" << std::fixed 
+                  << std::setprecision(1) << alpha << ")" << std::endl;
+    } 
+    else if(distance < 15.0) {
+        // 中程度の補正: バランス型
+        alpha = 0.9;  // GPS 90%
+        suppress_duration = measurement_suppress_duration_ * 0.3;
+        std::cout << "Strategy: Medium correction (alpha=" << std::fixed 
+                  << std::setprecision(1) << alpha << ")" << std::endl;
+    } 
+    else {
+        // 大きい補正: ほぼGPS絶対座標
+        alpha = 0.95;  // GPS 95%
+        suppress_duration = measurement_suppress_duration_ * 0.5;
+        std::cout << "Strategy: Large correction (alpha=" << std::fixed 
+                  << std::setprecision(1) << alpha << ")" << std::endl;
+    }
+    
+    // ✅ 1. 状態ベクトルを重み付き更新
+    double new_x = prev_x * (1.0 - alpha) + gps_x * alpha;
+    double new_y = prev_y * (1.0 - alpha) + gps_y * alpha;
+    
+    double actual_dx = new_x - prev_x;
+    double actual_dy = new_y - prev_y;
+    double actual_distance = std::sqrt(actual_dx * actual_dx + actual_dy * actual_dy);
+    
+    X_(0) = new_x;
+    X_(1) = new_y;
+    // yawは維持（GPSからは取得できないため）
+    
+    std::cout << "Actual correction: " << std::fixed << std::setprecision(3) 
+              << actual_distance << " m" << std::endl;
+    std::cout << "  New position: (" << std::fixed << std::setprecision(3) 
+              << new_x << ", " << new_y << ")" << std::endl;
+    
+    // ✅ 2. オドメトリ基準位置を同じだけシフト
+    update_odometry_reference(actual_dx, actual_dy);
+    
+    // ✅ 3. 共分散行列を適切に調整
+    // GPS共分散を取得
+    double gps_var_x = gps_pose_.pose.covariance[0];
+    double gps_var_y = gps_pose_.pose.covariance[7];
+    
+    // 位置の共分散をGPSの精度に基づいて設定
+    if(gps_var_x > 1e-9 && gps_var_y > 1e-9) {
+        // GPS共分散が有効な場合
+        double gps_weight = alpha;
+        double ekf_weight = 1.0 - alpha;
+        
+        // 重み付き共分散（簡易的な融合）
+        P_(0, 0) = ekf_weight * P_(0, 0) + gps_weight * gps_var_x * 4.0;
+        P_(1, 1) = ekf_weight * P_(1, 1) + gps_weight * gps_var_y * 4.0;
+    } else {
+        // GPS共分散が無効な場合は距離ベース
+        double position_uncertainty = actual_distance * 0.1;  // 移動量の10%
+        P_(0, 0) = std::max(P_(0, 0), position_uncertainty * position_uncertainty);
+        P_(1, 1) = std::max(P_(1, 1), position_uncertainty * position_uncertainty);
+    }
+    
+    // yaw共分散は小さく増加
+    P_(2, 2) = P_(2, 2) * 1.1;
+    
+    // 位置とyawの相関をリセット（大きく補正した場合）
+    if(distance > 10.0) {
+        P_(0, 2) = 0.0;
+        P_(2, 0) = 0.0;
+        P_(1, 2) = 0.0;
+        P_(2, 1) = 0.0;
+    }
+    
+    std::cout << "Covariance updated:" << std::endl;
+    std::cout << "  P(0,0)=" << std::fixed << std::setprecision(4) << P_(0,0) 
+              << ", P(1,1)=" << P_(1,1) << ", P(2,2)=" << P_(2,2) << std::endl;
+    
+    // ✅ 4. 大きく補正した場合はNDT情報をクリア
+    if(distance > 20.0) {
+        has_received_ndt_pose_ = false;
+        ndt_pose_ = geometry_msgs::msg::PoseStamped();
+        std::cout << "Large correction - NDT pose cleared (will re-acquire)" << std::endl;
+    }
+    
+    // ✅ 5. 測定更新の一時的抑制
+    if(suppress_duration > 0.0) {
+        suppress_measurements_after_reset_ = true;
+        measurement_suppress_until_ = this->now() + 
+            rclcpp::Duration::from_seconds(suppress_duration);
+        std::cout << "NDT/GPS measurements suppressed for " << std::fixed 
+                  << std::setprecision(1) << suppress_duration << " sec" << std::endl;
+    }
+    
+    // カウンタリセット
+    gps_high_quality_count_ = 0;
+    gps_respawn_in_progress_ = false;
+    
+    std::cout << "=== GPS GRADUAL RESPAWN COMPLETE ===" << std::endl;
+    std::cout << "========================================" << std::endl;
+}
+
+void EKF::gps_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+{
+    gps_pose_ = *msg;
+    has_received_gps_ = true;
+
+    // 測定抑制中かチェック
+    rclcpp::Time current_time = this->now();
+    if(measurement_suppress_until_.nanoseconds() > 0) {
+        if(current_time < measurement_suppress_until_) {
+            std::cout << "[DEBUG] GPS measurement suppressed (respawn in progress)" << std::endl;
+            has_received_gps_ = false;
+            return;
+        } else {
+            // 抑制期間が終了
+            measurement_suppress_until_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+            std::cout << "✓ Measurement suppression ended - resuming normal operation" << std::endl;
+        }
+    }
+
+    // 初回GPS受信時に自動初期化（RTK-FIXでなくてもgps_updaterを通過した有効な座標であれば初期位置を設定）
+    if (gps_auto_init_enable_ && !is_gps_pose_initialized_) {
+        double x = msg->pose.pose.position.x;
+        double y = msg->pose.pose.position.y;
+        double z = msg->pose.pose.position.z;
+        if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) {
+            double init_dist = std::hypot(x - X_(0), y - X_(1));
+            RCLCPP_INFO(this->get_logger(),
+                "Auto-initializing EKF position from first GPS pose: (%.3f, %.3f, %.3f) [offset from INIT: %.2f m]",
+                x, y, z, init_dist);
+
+            double prev_x = X_(0);
+            double prev_y = X_(1);
+            X_(0) = x;
+            X_(1) = y;
+            update_odometry_reference(x - prev_x, y - prev_y);
+
+            double var_x = msg->pose.covariance[0];
+            double var_y = msg->pose.covariance[7];
+            P_(0, 0) = (std::isfinite(var_x) && var_x > 1e-6) ? var_x : INIT_SIGMA_;
+            P_(1, 1) = (std::isfinite(var_y) && var_y > 1e-6) ? var_y : INIT_SIGMA_;
+            // 初期ヨー角は不確かさが大きいため、NDTが収束した際に受け入れられるようヨー角共分散を広げておく
+            P_(2, 2) = std::max(P_(2, 2), th_direction_covariance_ * 2.0);
+
+            // ※ GPSのz座標は基準高度との差分で大きくズレている場合があるため、ndt_pose_.pose.position.zは上書きしない
+            gps_init_ref_x_ = x;
+            gps_init_ref_y_ = y;
+            gps_init_ref_z_ = z;
+            odom_accum_since_gps_init_ = 0.0;
+            yaw_accum_since_gps_init_ = 0.0;
+            is_gps_pose_initialized_ = true;
+
+            publish_ekf_pose();
+            has_received_gps_ = false;
+            return;
+        }
+    }
+
+    // GPSの移動軌跡から初期ヨー角を自動補正（NDT収束前に移動した場合）
+    if (gps_auto_init_enable_ && gps_auto_yaw_init_enable_ && is_gps_pose_initialized_ && !is_gps_yaw_initialized_) {
+        double x = msg->pose.pose.position.x;
+        double y = msg->pose.pose.position.y;
+        double z = msg->pose.pose.position.z;
+        if (std::isfinite(x) && std::isfinite(y)) {
+            double dx = x - gps_init_ref_x_;
+            double dy = y - gps_init_ref_y_;
+            double dist = std::hypot(dx, dy);
+            if (dist >= gps_init_yaw_min_distance_) {
+                if (std::abs(odom_accum_since_gps_init_) >= gps_init_yaw_min_distance_ * 0.3) {
+                    double gps_course = std::atan2(dy, dx);
+                    if (odom_accum_since_gps_init_ < 0.0) {
+                        gps_course = normalize_angle(gps_course + M_PI);
+                    }
+                    // 移動中の旋回量(yaw_accum)を加味して現在のヨー角を算出
+                    double est_yaw = normalize_angle(gps_course + 0.5 * yaw_accum_since_gps_init_);
+                    RCLCPP_INFO(this->get_logger(),
+                        "Auto-initializing EKF yaw from GPS movement (dist=%.2f m, odom=%.2f m): yaw=%.3f rad (%.1f deg)",
+                        dist, odom_accum_since_gps_init_, est_yaw, est_yaw * 180.0 / M_PI);
+                    X_(2) = est_yaw;
+                    P_(2, 2) = std::max(P_(2, 2), th_direction_covariance_ * 2.0);
+                    is_gps_yaw_initialized_ = true;
+                } else {
+                    // オドメトリが動いていないのにGPSだけ動いた場合（GPSドリフト）は基準点を更新
+                    gps_init_ref_x_ = x;
+                    gps_init_ref_y_ = y;
+                    if (std::isfinite(z)) {
+                        gps_init_ref_z_ = z;
+                    }
+                    odom_accum_since_gps_init_ = 0.0;
+                    yaw_accum_since_gps_init_ = 0.0;
+                }
+            }
+        }
+    }
+    
+    // GPSリスポーン機能が無効の場合は通常のGPS測定更新のみ
+    if(!gps_respawn_enable_) {
+        static bool once = false;
+        if(!once) {
+            std::cout << "[DEBUG] GPS respawn disabled - using standard GPS measurement update only" 
+                      << std::endl;
+            once = true;
+        }
+        
+        // 通常のGPS測定更新
+        if(gps_measurement_enable_) {
+            measurement_update_gps();
+        }
+        return;
+    }
+    
+    // GPSリスポーン判定
+    if(should_gps_respawn(gps_pose_)) {
+        // 高精度GPS時のリスポーン実行
+        double gps_x = gps_pose_.pose.pose.position.x;
+        double gps_y = gps_pose_.pose.pose.position.y;
+        
+        gps_gradual_respawn(gps_x, gps_y);
+    } 
+    else {
+        // 通常のGPS測定更新
+        if(gps_measurement_enable_) {
+            measurement_update_gps();
+        }
+    }
+}
+
+void EKF::measurement_update_gps()
+{
+    if(!has_received_gps_) return;
+
+    Eigen::VectorXd X_prev = X_;
+    Eigen::MatrixXd P_prev = P_;
+    
+    std::cout << "[DEBUG] GPS standard measurement update" << std::endl;
+    
+    // Extract GPS position
+    double gps_x = gps_pose_.pose.pose.position.x;
+    double gps_y = gps_pose_.pose.pose.position.y;
+    if(!std::isfinite(gps_x) || !std::isfinite(gps_y)) {
+        has_received_gps_ = false;
+        return;
+    }
+    
+    // Mahalanobis distance check (optional - for outlier rejection)
+    Eigen::VectorXd gps_pos(2);
+    gps_pos << gps_x, gps_y;
+    
+    Eigen::VectorXd ekf_pos(2);
+    ekf_pos << X_(0), X_(1);
+    
+    Eigen::VectorXd diff = gps_pos - ekf_pos;
+    
+    // Extract position covariance (2x2)
+    Eigen::MatrixXd P_pos = P_.block<2,2>(0,0);
+    if(!P_pos.allFinite()) {
+        P_.setZero(STATE_SIZE_, STATE_SIZE_);
+        P_ = INIT_SIGMA_ * Eigen::MatrixXd::Identity(STATE_SIZE_, STATE_SIZE_);
+        P_pos = P_.block<2,2>(0,0);
+    }
+    double det = P_pos.determinant();
+    
+    if(std::isfinite(det) && std::abs(det) > 1e-12) {
+        try {
+            Eigen::MatrixXd P_pos_inv = P_pos.inverse();
+            double mahalanobis_dist = std::sqrt(diff.transpose() * P_pos_inv * diff);
+            
+            std::cout << "[DEBUG] GPS Mahalanobis distance: " << std::fixed 
+                      << std::setprecision(3) << mahalanobis_dist << std::endl;
+            
+            // Reject if distance is too large (threshold can be adjusted)
+            if(!std::isfinite(mahalanobis_dist) || mahalanobis_dist > 10.0) {
+                std::cout << "GPS measurement rejected (large Mahalanobis distance: " 
+                          << std::fixed << std::setprecision(3) << mahalanobis_dist 
+                          << ")" << std::endl;
+                has_received_gps_ = false;
+                return;
+            }
+        } catch(const std::exception& e) {
+            std::cout << "GPS Mahalanobis calculation error: " << e.what() << std::endl;
+        }
+    }
+    
+    // Observation vector Z (x, y only)
+    Eigen::VectorXd Z(2);
+    Z << gps_x, gps_y;
+    
+    // Observation matrix H (observe x and y only)
+    Eigen::MatrixXd H = Eigen::MatrixXd::Zero(2, X_.size());
+    H(0, 0) = 1.0;  // x
+    H(1, 1) = 1.0;  // y
+    
+    // Identity matrix
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(), X_.size());
+    
+    // Innovation Y
+    Eigen::VectorXd Y = Z - H * X_;
+    
+    // Observation noise covariance R (use GPS covariance)
+    Eigen::MatrixXd R(2, 2);
+    R << gps_pose_.pose.covariance[0], gps_pose_.pose.covariance[1],
+         gps_pose_.pose.covariance[6], gps_pose_.pose.covariance[7];
+    
+    // Add minimum variance if GPS covariance is too small or invalid
+    if(!std::isfinite(R(0,0)) || R(0,0) < 1e-6) R(0,0) = SIGMA_GPS_ * SIGMA_GPS_;
+    if(!std::isfinite(R(1,1)) || R(1,1) < 1e-6) R(1,1) = SIGMA_GPS_ * SIGMA_GPS_;
+    if(!std::isfinite(R(0,1))) R(0,1) = 0.0;
+    if(!std::isfinite(R(1,0))) R(1,0) = 0.0;
+    
+    // Innovation covariance S
+    Eigen::MatrixXd S = H * P_ * H.transpose() + R;
+    
+    // Kalman gain K
+    Eigen::MatrixXd K = P_ * H.transpose() * S.inverse();
+    
+    // State update
+    X_ += K * Y;
+    
+    // Covariance update
+    P_ = (I - K * H) * P_;
+
+    // NaN/Infチェック
+    if(!X_.allFinite() || !P_.allFinite()) {
+        X_ = X_prev;
+        P_ = P_prev;
+        has_received_gps_ = false;
+        return;
+    }
+    
+    std::cout << "[DEBUG] GPS update: dx=" << std::fixed << std::setprecision(3) 
+              << (K * Y)(0) << ", dy=" << (K * Y)(1) << std::endl;
+    std::cout << "[DEBUG] Position: x=" << std::fixed << std::setprecision(3) 
+              << X_(0) << ", y=" << X_(1) << std::endl;
+    
+    has_received_gps_ = false;
+}
+
+void EKF::navsat_callback(const sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
+{
+    has_received_navsat_ = true;
+    last_navsat_time_ = this->now();
+    // STATUS_GBAS_FIX (2) は RTK-FIX に対応 (cub_um982 等)
+    is_rtk_fixed_ = (msg->status.status >= sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX);
 }
 
 void EKF::process()
 {
-	if(has_received_imu_ && has_received_odom_){
-		// now_time_ = ros::Time::now();
-		if(is_first_){
-			dt = 1.0/(double)10;
-			is_first_ = false;
-		}
-		// else dt = now_time_.toSec() - last_time_.toSec();
-		motion_update(1.0/(double)10);
-		if(has_received_ndt_pose_) measurement_update();
-		//if(has_received_ndt_pose_ && !is_measurement_.data) measurement_update();
-		publish_ekf_pose();
-		// publish_tf();
-		has_received_ndt_pose_ = false;
-	}
 }
-// publish_tf()は一旦放置
+
 int main(int argc,char** argv)
 {
 	std::cout << "---ekf---" << std::endl;
     rclcpp::init(argc, argv); // ノードの初期化
     auto node = std::make_shared<EKF>();
-	// now_time_ = ros::Time::now();
-	// bool is_first_ = true;
-	rclcpp::Rate rate(10);
-	while(rclcpp::ok()){
-		node->process();
-		// last_time_ = now_time_;
-		rclcpp::spin_some(node);
-		rate.sleep();
-	}
+    rclcpp::spin(node);
+    rclcpp::shutdown();
 	return 0;
-}
-
-void EKF::measurement_update_6DoF()
-{
-	std::cout << "measurement" << std::endl;
-
-	// Z
-	Eigen::VectorXd Z(X_.size());
-	Z(0) = ndt_pose_.pose.position.x;
-	Z(1) = ndt_pose_.pose.position.y;
-	Z(2) = ndt_pose_.pose.position.z;
-	calc_rpy_from_quat(ndt_pose_.pose.orientation,Z(3),Z(4),Z(5));
-
-	// H
-	Eigen::MatrixXd H = Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-	// I
-	Eigen::MatrixXd I = Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-	// Y
-	Eigen::VectorXd Y = Z - measurement_function(X_,H);
-
-	// R
-	Eigen::MatrixXd R = SIGMA_NDT_*Eigen::MatrixXd::Identity(X_.size(),X_.size());
-
-	// S
-	Eigen::MatrixXd S = H*P_*H.transpose() + R;
-
-	// K
-	Eigen::MatrixXd K = P_*H.transpose()*S.inverse();
-
-	X_ += K*Y;
-	P_ = (I - K*H)*P_;
-
-	for(int i = 3; i < 6; i++) X_(i) = normalize_angle(X_(i));
-}
-
-void EKF::motion_update_6DoF(double dt)
-{
-	double roll = X_(3) ;
-	double pitch = X_(4);
-	double yaw = X_(5) ;
-
-	double delta_yaw = imu_.angular_velocity.z*dt;
-	double delta_roll = imu_.angular_velocity.x*dt;
-	double delta_pitch = imu_.angular_velocity.y*dt;
-
-	if(delta_yaw < 1e-3) delta_yaw = 0.0;
-	if(delta_roll < 1e-3) delta_roll = 0.0;
-	if(delta_pitch < 1e-3) delta_pitch = 0.0;
-
-	Eigen::Vector3d delta_position = { odom_.twist.twist.linear.x*dt, 0.0, 0.0 };
-	Eigen::Vector3d delta_rotation = { delta_roll, delta_pitch, delta_yaw };
-	Eigen::Matrix3d rotation_rpy;
-	rotation_rpy << 1, std::sin(roll)*std::tan(pitch), std::cos(roll)*std::tan(pitch),
-	                0, std::cos(roll)                , -std::sin(roll)               ,
-					0, std::sin(roll)/std::cos(pitch), std::cos(roll)/std::cos(pitch);
-
-	Eigen::VectorXd F(X_.size());
-	F.segment(0,3) = X_.segment(0,3) + calc_rotation_matrix(X_.segment(3,3))*delta_position;
-	F.segment(3,3) = X_.segment(3,3) + rotation_rpy*delta_rotation;
-	for(int i = 3; i < 6; i++) F(i) = normalize_angle(F(i));
-
-	Eigen::MatrixXd G(X_.size(),X_.size());
-	G.block(0,0,3,3) = Eigen::Matrix3d::Identity();
-	G.block(3,3,3,3) = Eigen::Matrix3d::Identity();
-	G.block(3,0,3,3) = Eigen::Matrix3d::Zero();
-	G.block(0,3,3,3) = Eigen::Matrix3d::Zero();
-
-	G(3,3) = 1.0 + std::cos(roll)*std::tan(pitch)*delta_pitch - std::sin(roll)*std::tan(pitch)*delta_yaw;
-	G(3,4) = std::sin(roll)/std::cos(pitch)/std::cos(pitch)*delta_pitch + std::cos(roll)/std::cos(pitch)/std::cos(pitch)*delta_yaw;
-	G(3,5) = 0.0;
-	G(4,3) = -std::sin(roll)*delta_pitch - std::cos(roll)*delta_yaw;
-	G(4,4) = 1.0;
-	G(4,5) = 0.0;
-	G(5,3) = std::cos(roll)/std::cos(pitch)*delta_pitch - std::sin(roll)/std::cos(pitch)*delta_yaw;
-	G(5,4) = std::sin(roll)*std::sin(pitch)/std::cos(pitch)/std::cos(pitch)*delta_pitch + std::cos(roll)*std::sin(pitch)/std::cos(pitch)/std::cos(pitch)*delta_yaw;
-	G(5,5) = 1.0;
-	G(0,3) = delta_position(1)*(std::cos(roll)*std::sin(pitch)*std::cos(yaw) + std::sin(roll)*std::sin(yaw)) + delta_position(2)*(-std::sin(roll)*std::sin(pitch)*std::cos(yaw) + std::cos(roll)*std::sin(yaw));
-	G(0,4) = delta_position(0)*(-std::sin(pitch)*std::cos(yaw)) + delta_position(1)*(std::sin(roll)*std::cos(pitch)*std::cos(yaw)) + delta_position(2)*(std::cos(roll)*std::cos(pitch)*std::cos(yaw));
-	G(0,5) = delta_position(0)*(-std::cos(pitch)*std::sin(yaw)) + delta_position(1)*(-std::sin(roll)*std::sin(pitch)*std::sin(yaw) - std::cos(roll)*std::cos(yaw)) + delta_position(2)*(-std::cos(roll)*std::sin(pitch)*std::sin(yaw) + std::sin(roll)*std::cos(yaw));
-	G(1,3) = delta_position(1)*(std::cos(roll)*std::sin(pitch)*std::sin(yaw ) - std::sin(roll)*std::cos(yaw)) + delta_position(2)*(-std::sin(roll)*std::sin(pitch)*std::sin(yaw) - std::cos(roll)*std::cos(yaw));
-	G(1,4) = delta_position(0)*(-std::sin(pitch)*std::sin(yaw)) + delta_position(1)*(std::sin(roll)*std::cos(pitch)*std::sin(yaw)) + delta_position(2)*(std::cos(roll)*std::cos(pitch)*std::sin(yaw));
-	G(1,5) = delta_position(0)*(std::cos(pitch)*std::cos(yaw)) + delta_position(1)*(std::sin(roll)*std::sin(pitch)*std::cos(yaw) - std::cos(roll)*std::sin(yaw)) + delta_position(2)*(std::cos(roll)*std::sin(pitch)*std::cos(yaw) + std::sin(roll)*std::sin(yaw));
-	G(2,3) = delta_position(1)*(std::cos(roll)*std::cos(pitch)) + delta_position(2)*(-std::sin(roll)*std::cos(pitch));
-	G(2,4) = delta_position(0)*(-std::cos(pitch)) + delta_position(1)*(-std::sin(roll)*std::sin(pitch)) + delta_position(2)*(-std::cos(roll)*std::sin(pitch)) ;
-	G(2,5) = 0.0;
-
-	Eigen::MatrixXd Q(X_.size(),X_.size());
-	Q.setZero();
-	Q.block(0,0,3,3) = SIGMA_ODOM_*Eigen::Matrix3d::Identity();
-	Q.block(3,3,3,3) = SIGMA_IMU_*Eigen::Matrix3d::Identity();
-
-	X_ = F;
-	P_ = G*P_*G.transpose() + Q;
-}
-
-void EKF::respawn()
-{
-	ekf_pose_.pose.position.x = respawn_pose_.pose.position.x;
-	ekf_pose_.pose.position.y = respawn_pose_.pose.position.y;
-	ekf_pose_.pose.position.z = ndt_pose_.pose.position.z;
-	ekf_pose_.pose.orientation = ndt_pose_.pose.orientation;
-	ekf_pose_.header.frame_id = map_frame_id_;
-	X_(0) = respawn_pose_.pose.position.x;
-	X_(1) = respawn_pose_.pose.position.y;
-	// ekf_pose_pub_.publish(ekf_pose_);
-	ekf_pose_pub_->publish(ekf_pose_);
 }
