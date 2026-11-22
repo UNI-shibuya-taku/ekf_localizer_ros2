@@ -16,7 +16,7 @@ DynamicTfCub::DynamicTfCub() : Node("DynamicTFCub")
     /*subscriber*/
     // sub_current_pose = nh.subscribe("/ekf_pose", 10, &DynamicTfCub::current_pose_callback, this);
     sub_current_pose   = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/test/ekf_pose", rclcpp::QoS(1).reliable(),
+        "/ekf_pose", rclcpp::QoS(1).reliable(),
         std::bind(&DynamicTfCub::current_pose_callback, this, std::placeholders::_1));
 
     // odom_tf_enable=trueの場合のみオドメトリをサブスクライブ

@@ -2,10 +2,10 @@
 ekf_localizer_node:
   ros__parameters:
     # Topic names
-    # ndt_pose_topic_name: "/test/ndt_pose"
+    # ndt_pose_topic_name: "/ndt_pose"
     # imu_topic_name: "/bno055/imu"
     # odom_topic_name: "/odom"
-    # ekf_pose_topic_name: "/test/ekf_pose"
+    # ekf_pose_topic_name: "/ekf_pose"
     # gps_pose_topic_name: "/gps_pose"
     # initialpose_topic_name: "/initialpose"
     

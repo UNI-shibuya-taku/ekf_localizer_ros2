@@ -4,10 +4,10 @@
 // TODO NAN対策
 EKF::EKF() : Node("EKF")
 {
-	this->declare_parameter<std::string>("ndt_pose_topic_name", "/test/ndt_pose");
+	this->declare_parameter<std::string>("ndt_pose_topic_name", "/ndt_pose");
     this->declare_parameter<std::string>("imu_topic_name", "/imu/data_raw");
     this->declare_parameter<std::string>("odom_topic_name", "/odom");
-    this->declare_parameter<std::string>("ekf_pose_topic_name", "/test/ekf_pose");
+    this->declare_parameter<std::string>("ekf_pose_topic_name", "/ekf_pose");
     this->declare_parameter<std::string>("map_frame_id", "map");
     this->declare_parameter<std::string>("odom_frame_id", "odom");
     this->declare_parameter<std::string>("base_link_frame_id", "base_link");

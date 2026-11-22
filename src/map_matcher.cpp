@@ -10,9 +10,9 @@ MapMatcher::MapMatcher() : Node("MapMatcher")
 {
 	this->declare_parameter<std::string>("pcd_file_path", "/home/cub/colcon_ws/src/cub/ekf_localizer/pcd/map_msakosu.pcd");
 	this->declare_parameter<std::string>("pc_topic_name", {"/velodyne_points"});
-	this->declare_parameter<std::string>("ekf_pose_topic_name", {"/test/ekf_pose"});
+	this->declare_parameter<std::string>("ekf_pose_topic_name", {"/ekf_pose"});
 	this->declare_parameter<std::string>("initialpose_topic_name", {"/initialpose"});
-	this->declare_parameter<std::string>("ndt_pose_topic_name", {"/test/ndt_pose"});
+	this->declare_parameter<std::string>("ndt_pose_topic_name", {"/ndt_pose"});
 	this->declare_parameter<std::string>("map_topic_name", {"map_out"});
 	this->declare_parameter<std::string>("ndt_pc_topic_name", {"/ndt_pc"});
 	this->declare_parameter<std::string>("local_map_topic_name", {"/local_map"});
